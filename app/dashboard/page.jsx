@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession, can } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { resolveFee } from "@/lib/fees";
 import Shell from "@/components/Shell";
 
 export const dynamic = "force-dynamic";
@@ -13,31 +14,35 @@ async function counts() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const [openReqs, openings, candidates, callsToday, interviewsToday, unbillable] =
-    await Promise.all([
-      prisma.requirement.count({ where: { status: "open" } }),
-      prisma.requirement.aggregate({ where: { status: "open" }, _sum: { openings: true } }),
-      prisma.candidate.count({ where: { archived: false } }),
-      prisma.candidateCall.count({ where: { calledAt: { gte: today } } }),
-      prisma.interview.count({ where: { scheduledAt: { gte: today } } }),
-      // No terms on the opening AND none on the client — nothing to bill against.
-      //
-      // `client: { is: {...} }`, not `client: {...}`. Prisma rejects the
-      // shorthand on a to-one relation and the error it raises names only the
-      // offending argument, so it reads like the column is missing rather than
-      // the filter being shaped wrong.
-      prisma.requirement.count({
-        where: { status: "open", feeType: null, client: { is: { feeType: null } } },
-      }),
-    ]);
+  // "Which openings can't be billed?" is not a database filter — it is the
+  // question resolveFee() already answers, and writing it a second time as a
+  // Prisma `where` gives the rule two homes that will disagree the first time
+  // the fee logic changes. So: fetch the open requirements with their client's
+  // terms and let resolveFee decide. There are a hundred of these, not a
+  // million; the clarity is worth more than the round trip saved.
+  const [open, candidates, callsToday, interviewsToday] = await Promise.all([
+    prisma.requirement.findMany({
+      where: { status: "open" },
+      select: {
+        openings: true,
+        feeType: true,
+        feeBps: true,
+        feeFlat: true,
+        client: { select: { feeType: true, feeBps: true, feeFlat: true } },
+      },
+    }),
+    prisma.candidate.count({ where: { archived: false } }),
+    prisma.candidateCall.count({ where: { calledAt: { gte: today } } }),
+    prisma.interview.count({ where: { scheduledAt: { gte: today } } }),
+  ]);
 
   return {
-    openReqs,
-    openings: openings._sum.openings || 0,
+    openReqs: open.length,
+    openings: open.reduce((n, r) => n + (r.openings || 0), 0),
     candidates,
     callsToday,
     interviewsToday,
-    unbillable,
+    unbillable: open.filter((r) => resolveFee(r, r.client).feeType == null).length,
   };
 }
 

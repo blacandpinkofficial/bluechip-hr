@@ -81,7 +81,13 @@ model Client {
   hrEmail     String?
   city        String?
   // House commercials. A requirement may override either field.
-  feeType     String  @default("percent") // percent | flat
+  //
+  // feeType is nullable with NO default, deliberately. It began as
+  // `String @default("percent")`, which meant every newly created client
+  // claimed to be percentage-based before anyone had agreed a percentage:
+  // "no terms yet" and "8.33%" were indistinguishable in the column, and a
+  // non-nullable field cannot even be queried for the unset case.
+  feeType     String? // percent | flat | null = not agreed yet
   feeBps      Int? // 8.33% → 833
   feeFlat     Int? // rupees, e.g. 8000
   paymentDays Int     @default(30) // credit period agreed with the client

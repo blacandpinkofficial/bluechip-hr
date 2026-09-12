@@ -72,11 +72,38 @@ git pull --ff-only 2>&1 | tee -a "$LOG"
 log "now at: $(git log -1 --pretty='%h %s')"
 
 # ── Install + schema ────────────────────────────────────────────────────────
-log "npm ci"
-npm ci --omit=dev --no-audit --no-fund 2>&1 | tail -20 | tee -a "$LOG" || {
-  log "npm ci failed, falling back to npm install"
-  npm install --no-audit --no-fund 2>&1 | tail -20 | tee -a "$LOG"
-}
+# NOT --omit=dev. `prisma` is a devDependency (correctly — it is a CLI, not a
+# runtime import) and `npm run build` calls `prisma generate`. Omitting dev
+# dependencies would make every single deploy fail at the build step with a
+# "prisma: not found" that looks like a broken machine rather than a wrong flag.
+#
+# --include=dev is stated EXPLICITLY rather than relied on as the default,
+# because the default flips: npm omits devDependencies whenever NODE_ENV is
+# "production", and this app's .env sets exactly that. Inherit it into the
+# deploy shell once — a sourced .env, a systemd-run deploy, a cron job — and
+# every build fails on a missing tailwindcss or prisma, which reads like a
+# broken machine rather than an environment variable doing its documented job.
+log "npm install"
+NPM_FLAGS="--include=dev --no-audit --no-fund"
+if [ -f package-lock.json ]; then
+  # npm ci refuses to run when package.json and the lockfile disagree — which
+  # is exactly what a dependency bump produces. Fall back rather than fail.
+  if ! npm ci $NPM_FLAGS 2>&1 | tail -20 | tee -a "$LOG"; then
+    log "npm ci could not be used (lockfile out of step with package.json) — using npm install"
+    npm install $NPM_FLAGS 2>&1 | tail -20 | tee -a "$LOG"
+  fi
+else
+  npm install $NPM_FLAGS 2>&1 | tail -20 | tee -a "$LOG"
+fi
+
+# Prove the build can actually run before spending three minutes finding out it
+# can't. Each of these is imported by the build and by nothing else, so a
+# missing one produces an error deep inside webpack that names a file in
+# node_modules rather than the real problem.
+for mod in tailwindcss postcss autoprefixer prisma; do
+  [ -d "node_modules/$mod" ] || die "'$mod' is missing from node_modules after install. The build needs it. Most likely NODE_ENV=production leaked into this shell and npm skipped devDependencies — check with: echo \$NODE_ENV"
+done
+log "build dependencies present"
 
 log "prisma db push"
 npx prisma db push --skip-generate 2>&1 | tail -20 | tee -a "$LOG"
