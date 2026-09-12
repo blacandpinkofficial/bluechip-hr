@@ -1,0 +1,375 @@
+// Blue Chip HR — data model
+// ---------------------------------------------------------------------------
+// Derived directly from the two workbooks the desk runs on today:
+//   JOB DESCRIPTION SHEET.xlsx     → Client, Requirement
+//   Recruiters Daily Report.xlsx   → Candidate, CandidateCall, Interview, Placement
+//
+// Two rules run through the whole thing:
+//
+//   MONEY IS NEVER A FLOAT. Rupees are Int. Percentages are basis points
+//   (8.33% = 833). Floating point rounding in a fee calculation is how a
+//   placement bills ₹49,999.97 and someone has to explain it to a client.
+//
+//   NOTHING THAT CAN BE COUNTED IS STORED. The "Daily productivity" tab and the
+//   revenue column of "Recruiters MTD Performance" have no tables here. They are
+//   queries over the rows below. That is the point of the app: the reports the
+//   team types out by hand every day stop being typed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PEOPLE WHO LOG IN
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Deliberately NOT called Staff. Pulse has a Staff table for shop employees;
+// these are different people in a different company in a different database,
+// and the name difference is a guard against anyone ever wiring the two up.
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  phone        String?
+  passwordHash String
+  role         String    @default("recruiter") // owner | manager | recruiter
+  active       Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions   Session[]
+  calls      CandidateCall[]
+  candidates Candidate[]     @relation("CandidateOwner")
+  placements Placement[]
+  notes      ClientNote[]
+
+  @@index([active, role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLIENTS AND THEIR OPENINGS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// One row per hiring company: AGS Health, Omega, Omega-Bangalore, Access,
+// Acrologic, Navigant, Lapiz. The sheet repeats the company name on every
+// opening; here it is said once.
+model Client {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  hrName      String? // "HR NAME" column — the person the desk actually calls
+  hrPhone     String?
+  hrEmail     String?
+  city        String?
+  // House commercials. A requirement may override either field.
+  feeType     String  @default("percent") // percent | flat
+  feeBps      Int? // 8.33% → 833
+  feeFlat     Int? // rupees, e.g. 8000
+  paymentDays Int     @default(30) // credit period agreed with the client
+  active      Boolean @default(true)
+
+  notes        ClientNote[]
+  requirements Requirement[]
+  placements   Placement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+}
+
+model ClientNote {
+  id        String   @id @default(cuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  kind      String   @default("note") // note | meeting | escalation | payment | feedback
+  body      String
+  authorId  String?
+  author    User?    @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt])
+}
+
+// One opening. The sheet's two separate "PROCESS" columns meant two different
+// things and could not both be filtered on; they are split here.
+model Requirement {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id])
+
+  designation   String // AR Caller, Senior AR Caller, Team Lead…
+  domain        String? // "RCM / Denials", "Provider AR"
+  processType   String? // voice | non-voice | semi-voice      ← sheet col F
+  processDetail String? // free text, e.g. "Denials management" ← sheet col M
+  location      String
+  openings      Int     @default(1)
+
+  expMinMonths Int? // months, not years — "6 months to 1 year" is a real ask here
+  expMaxMonths Int?
+
+  // "CTC (Take Home)" — monthly rupees in hand. This is the number a recruiter
+  // says on the phone, so it is the number stored; annual CTC is derived.
+  takeHomeMin Int?
+  takeHomeMax Int?
+  shift       String? // day | night | rotational | US shift
+
+  // Commercials for THIS opening. Null means "use the client's default".
+  feeType String?
+  feeBps  Int?
+  feeFlat Int?
+
+  // ── Knockout criteria ─────────────────────────────────────────────────────
+  // In the spreadsheet these are prose in cells nobody can filter on, which is
+  // why candidates get rejected in week two for something knowable in minute
+  // one. As fields, the call screen can warn the recruiter immediately.
+  relievingRequired Boolean @default(false) // "RELIEVING"
+  arrearsAllowed    Boolean @default(true) // "ARREARS"
+  educationMin      String? // "Any graduate", "No B.E/B.Tech"
+  docsRequired      String? // comma-separated checklist
+  cabFacility       String  @default("none") // none | oneway | twoway
+  notes             String?
+
+  status   String   @default("open") // open | hold | filled | closed
+  priority String   @default("normal") // low | normal | high
+  openedAt DateTime @default(now())
+  closedAt DateTime?
+
+  candidates Candidate[]
+  interviews Interview[]
+  placements Placement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, clientId])
+  @@index([location, status])
+  @@index([designation])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CANDIDATES
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The "Daily Call List" tab, normalised. One row per person, not per call —
+// today the same candidate appears on four different days as four rows and
+// nobody can tell it is one person.
+model Candidate {
+  id     String  @id @default(cuid())
+  name   String
+  phone  String
+  email  String?
+  altPhone String?
+
+  designation  String? // what they do now
+  location     String?
+  expMonths    Int?
+  currentCtc   Int? // monthly take-home, rupees
+  expectedCtc  Int?
+  noticeDays   Int?
+  source       String? // naukri | referral | walk-in | database | linkedin | whatsapp
+  skills       String?
+
+  // Knockout answers, asked once and remembered. Matched against the
+  // requirement's criteria so a mismatch surfaces before anyone books a slot.
+  hasRelieving Boolean?
+  hasArrears   Boolean?
+  education    String?
+
+  stage  String  @default("new") // new | contacted | shortlisted | lined-up | interviewed | selected | joined | dropped
+  status String? // the free-text "status" column from the sheet, kept for nuance
+  rating Int? // 1..5
+
+  requirementId String?
+  requirement   Requirement? @relation(fields: [requirementId], references: [id])
+
+  ownerId String?
+  owner   User?   @relation("CandidateOwner", fields: [ownerId], references: [id])
+
+  resumeKey   String? // object-storage key, if a file was uploaded
+  resumeText  String? // extracted text, for search
+
+  lastContactedAt DateTime?
+  callCount       Int       @default(0) // denormalised for list sorting; CandidateCall is the truth
+  archived        Boolean   @default(false)
+
+  calls      CandidateCall[]
+  interviews Interview[]
+  placements Placement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // A phone number is one person. This is the constraint the spreadsheet lacks,
+  // and the reason two recruiters currently call the same candidate on the same
+  // morning without knowing.
+  @@unique([phone])
+  @@index([stage, archived])
+  @@index([ownerId, lastContactedAt])
+  @@index([requirementId])
+  @@index([createdAt])
+}
+
+// Every dial. Counting these by day and recruiter IS the "No of Calls for the
+// day" column, so nobody tallies it again at 7pm.
+model CandidateCall {
+  id          String    @id @default(cuid())
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+
+  calledAt DateTime @default(now())
+  outcome  String // connected | no-answer | busy | wrong-number | not-interested | callback
+  notes    String?
+  followUpAt DateTime?
+
+  @@index([userId, calledAt])
+  @@index([candidateId, calledAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERVIEWS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The "Interview Schedules" tab. Company, position and phone are NOT copied in
+// — they are reached through the candidate and the requirement, so they cannot
+// drift apart the way they do across two spreadsheet tabs.
+model Interview {
+  id            String      @id @default(cuid())
+  candidateId   String
+  candidate     Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+  scheduledAt DateTime
+  mode        String   @default("telephonic") // telephonic | direct | video
+  location    String?
+  round       Int      @default(1)
+  interviewer String?
+
+  // "Direct Line ups scheduled" and "Telephonic scheduled" on the productivity
+  // tab are counts of this table by mode. "Intervw attend for the day" is the
+  // count where attended = true.
+  attended Boolean?
+  outcome  String? // pending | selected | rejected | on-hold | no-show
+  feedback String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([scheduledAt])
+  @@index([requirementId, scheduledAt])
+  @@index([candidateId])
+  @@index([outcome])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLACEMENTS — WHERE THE MONEY IS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The "Recruiters MTD Performance" tab. Nothing in Pulse corresponds to this;
+// it is the half of the business that gets Blue Chip paid.
+model Placement {
+  id            String      @id @default(cuid())
+  candidateId   String
+  candidate     Candidate   @relation(fields: [candidateId], references: [id])
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+  clientId      String
+  client        Client      @relation(fields: [clientId], references: [id])
+  recruiterId   String
+  recruiter     User        @relation(fields: [recruiterId], references: [id])
+
+  selectedOn DateTime
+  joinedOn   DateTime? // "D.O.J" — revenue is only real once this is set
+  employeeId String? // issued by the client
+
+  ctcOfferedAnnual Int // rupees per year
+  takeHomeMonthly  Int?
+  designation      String
+  location         String
+
+  // Terms FROZEN at selection, copied from the requirement or the client.
+  // Deliberately not a lookup: when Blue Chip renegotiates a rate with Omega
+  // next year, last year's placements must not silently re-price themselves.
+  feeType  String // percent | flat
+  feeBps   Int?
+  feeFlat  Int?
+  revenue  Int // computed once from the frozen terms, then stored
+
+  invoiceStatus String    @default("pending") // pending | raised | paid | written-off
+  invoiceNo     String?
+  invoicedOn    DateTime?
+  paidOn        DateTime?
+
+  // Free-replacement window. If the candidate leaves inside it, Blue Chip owes
+  // a replacement and the revenue is at risk — which is worth knowing before
+  // the month closes, not after.
+  replacementUntil DateTime?
+  droppedOn        DateTime?
+  dropReason       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([recruiterId, selectedOn])
+  @@index([clientId, joinedOn])
+  @@index([invoiceStatus])
+  @@index([joinedOn])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOUSEKEEPING
+// ═══════════════════════════════════════════════════════════════════════════
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String // create | update | delete | login | export | import
+  entity    String // Candidate | Requirement | Placement …
+  entityId  String?
+  summary   String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// Import of the existing workbooks, kept so a bad import can be identified and
+// undone rather than hand-unpicked.
+model ImportBatch {
+  id         String   @id @default(cuid())
+  kind       String // requirements | candidates | placements
+  filename   String
+  rowsTotal  Int      @default(0)
+  rowsOk     Int      @default(0)
+  rowsFailed Int      @default(0)
+  errorsJson String   @default("[]")
+  userId     String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}

@@ -1,0 +1,29 @@
+# Line endings.
+#
+# The repo is authored on Windows and deployed on Linux. Git's autocrlf warned
+# about every file during the first `git add` — harmless for most of them, but
+# NOT for the shell scripts: a deploy script checked out with CRLF fails on the
+# server with "$'\r': command not found", and the error points at the line after
+# the real one. It is a genuinely horrible half-hour to debug.
+#
+# So the two deploy scripts are pinned to LF everywhere, working copy included.
+
+* text=auto
+
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.prisma text eol=lf
+
+# These only ever run on Windows and want CRLF.
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Never touch these.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.xlsx  binary
+*.xls   binary
