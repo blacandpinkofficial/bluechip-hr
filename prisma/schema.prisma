@@ -355,6 +355,20 @@ model Placement {
 // HOUSEKEEPING
 // ═══════════════════════════════════════════════════════════════════════════
 
+// One row, id "singleton". The handful of numbers that are policy rather than
+// data — how long a replacement is owed for, what the house credit period is —
+// and which every placement copies at the moment it is created.
+model Setting {
+  id                 String   @id @default("singleton")
+  companyName        String   @default("Blue Chip HR Solutions Pvt. Ltd.")
+  // Free-replacement window, in days from the joining date. 90 is the usual
+  // term in Indian staffing; 30 and 45 both exist. It is stored rather than
+  // hard-coded because it is a commercial term, and commercial terms change.
+  replacementDays    Int      @default(90)
+  defaultPaymentDays Int      @default(30)
+  updatedAt          DateTime @updatedAt
+}
+
 model AuditLog {
   id        String   @id @default(cuid())
   userId    String?

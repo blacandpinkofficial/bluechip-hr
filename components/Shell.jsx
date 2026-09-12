@@ -15,7 +15,10 @@ const NAV = [
   { href: "/interviews",   label: "Interviews",   cap: "interview.read" },
   { href: "/requirements", label: "Requirements", cap: "requirement.read" },
   { href: "/clients",      label: "Clients",      cap: "client.read" },
+  { href: "/placements",   label: "Placements",   cap: "report.own" },
   { href: "/import",       label: "Import",       cap: "import.run" },
+  { href: "/users",        label: "Team",         cap: "user.read" },
+  { href: "/settings",     label: "Settings",     cap: null },
 ];
 
 export default function Shell({ children, title, subtitle, actions }) {
