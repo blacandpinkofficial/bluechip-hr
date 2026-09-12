@@ -61,8 +61,27 @@ ok "Pulse connects to database '$PULSE_DB' as role '$PULSE_ROLE'"
 echo
 echo "1. Database"
 if [ "$(psql_admin -c "SELECT 1 FROM pg_roles WHERE rolname='$BC_ROLE'")" = "1" ]; then
-  say "role '$BC_ROLE' already exists — leaving its password alone"
-  BC_PASS=""
+  # The role exists. Whether we may touch its password depends entirely on
+  # whether anything is using it.
+  #
+  # A .env means a working install: the password in that file is the only copy
+  # anywhere, so changing it here would silently break the app with a password
+  # mismatch nobody could diagnose. Leave it alone.
+  #
+  # No .env means a half-finished run — the role was created and then the
+  # script stopped before recording the password. That password is now lost to
+  # everyone, including us, so the role is unusable until it is reset. Resetting
+  # it is safe precisely because nothing can be using it.
+  if [ -f "$BC_DIR/.env" ]; then
+    say "role '$BC_ROLE' already exists and $BC_DIR/.env is present — leaving the password alone"
+    BC_PASS=""
+  else
+    BC_PASS="$(openssl rand -base64 24 | tr -d '/+=' | head -c 28)"
+    psql_admin -c "ALTER ROLE $BC_ROLE LOGIN PASSWORD '$BC_PASS';"
+    warn "role '$BC_ROLE' existed from an earlier run but no .env was written —"
+    warn "its password was unrecoverable, so a new one has been set. Nothing was"
+    warn "using it yet, so nothing breaks."
+  fi
 else
   BC_PASS="$(openssl rand -base64 24 | tr -d '/+=' | head -c 28)"
   psql_admin -c "CREATE ROLE $BC_ROLE LOGIN PASSWORD '$BC_PASS';"
@@ -90,20 +109,60 @@ echo
 echo "2. Closing '$PULSE_DB' to everyone but Pulse"
 PUBLIC_HAD_CONNECT="$(psql_admin -c "SELECT has_database_privilege('public','$PULSE_DB','CONNECT')")"
 
-psql_admin -c "GRANT CONNECT ON DATABASE $PULSE_DB TO $PULSE_ROLE;" >/dev/null
-ok "granted CONNECT on '$PULSE_DB' to '$PULSE_ROLE' explicitly"
+# Who ACTUALLY connects to the Pulse database? .env names one role, but the
+# running service could have been started with a different DATABASE_URL, and a
+# backup job or cron could use another again. Ask Postgres who is connected
+# right now and grant every one of them explicitly — trusting .env alone could
+# lock out whoever was not in it.
+LIVE_ROLES="$(psql_admin -c "SELECT DISTINCT usename FROM pg_stat_activity WHERE datname='$PULSE_DB' AND usename IS NOT NULL AND usename <> '$BC_ROLE';" | tr -d ' ')"
+
+GRANTEES="$PULSE_ROLE"
+for r in $LIVE_ROLES; do
+  case " $GRANTEES " in *" $r "*) ;; *) GRANTEES="$GRANTEES $r" ;; esac
+done
+
+for r in $GRANTEES; do
+  psql_admin -c "GRANT CONNECT ON DATABASE $PULSE_DB TO \"$r\";" >/dev/null
+  ok "granted CONNECT on '$PULSE_DB' to '$r'"
+done
+
+# Prove the grants took BEFORE removing anything. If this fails, nothing has
+# been revoked and Pulse was never at risk for a moment.
+for r in $GRANTEES; do
+  if [ "$(psql_admin -c "SELECT has_database_privilege('$r','$PULSE_DB','CONNECT')")" != "t" ]; then
+    die "Could not give '$r' its own CONNECT on '$PULSE_DB'. Nothing was revoked — Pulse is untouched."
+  fi
+done
+ok "every Pulse role holds CONNECT in its own right, not through PUBLIC"
 
 if [ "$PUBLIC_HAD_CONNECT" = "t" ]; then
   psql_admin -c "REVOKE CONNECT ON DATABASE $PULSE_DB FROM PUBLIC;" >/dev/null
-  say "revoked PUBLIC's blanket CONNECT on '$PULSE_DB' — verifying Pulse still works…"
+  say "revoked PUBLIC's blanket CONNECT on '$PULSE_DB' — re-checking…"
 
-  # psql takes the connection URI as-is, so there is no password to parse out
-  # and nothing to get wrong if it happens to be URL-encoded.
-  if psql "$PULSE_URL" -qtAX -c "SELECT 1" >/dev/null 2>&1; then
-    ok "Pulse can still reach its database"
+  # CONNECT is what the revoke changed, so CONNECT is what has to be re-proven.
+  # This check is authoritative and needs no password.
+  for r in $GRANTEES; do
+    if [ "$(psql_admin -c "SELECT has_database_privilege('$r','$PULSE_DB','CONNECT')")" != "t" ]; then
+      psql_admin -c "GRANT CONNECT ON DATABASE $PULSE_DB TO PUBLIC;" >/dev/null
+      die "'$r' lost CONNECT after the revoke. PUBLIC's grant has been put back — Pulse is unaffected. Send me this output."
+    fi
+  done
+  ok "Pulse's access to '$PULSE_DB' survives the revoke"
+
+  # A live connection is extra confirmation, NOT the test, and must not gate
+  # anything. Prisma connection strings carry parameters libpq rejects —
+  # "?schema=public" being the usual one — so psql can refuse a URL that Prisma
+  # uses perfectly well. Strip the query string, and print whatever happens
+  # rather than swallowing it: hiding this error is exactly what made the first
+  # version of this script abort with no way to tell why.
+  PULSE_URI_CLEAN="${PULSE_URL%%\?*}"
+  if live_out="$(psql "$PULSE_URI_CLEAN" -qtAX -c "SELECT 1" 2>&1)"; then
+    ok "live test connection as '$PULSE_ROLE' succeeded"
   else
-    psql_admin -c "GRANT CONNECT ON DATABASE $PULSE_DB TO PUBLIC;" >/dev/null
-    die "Pulse could NOT connect after the revoke. I have put PUBLIC's grant back — Pulse is unaffected. Nothing else was changed. Send me this output."
+    warn "could not make a live test connection: ${live_out}"
+    warn "This does NOT mean Pulse is broken. The privilege check above is the real"
+    warn "test and it passed; a live connection can fail for auth reasons this"
+    warn "script never touched. Confirm by loading app.blacandpink.com."
   fi
 else
   say "PUBLIC already had no CONNECT on '$PULSE_DB' — nothing to revoke"
