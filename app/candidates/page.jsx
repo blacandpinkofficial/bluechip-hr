@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
+import { waMeLink, waWebLink, telLink, jobMessage, followUpMessage } from "@/lib/whatsapp";
 
 const QUEUES = [
   { key: "due", label: "Callbacks due" },
@@ -93,6 +94,8 @@ export default function CandidatesPage() {
   const [notes, setNotes] = useState("");
   const [callbackAt, setCallbackAt] = useState("");
   const [logged, setLogged] = useState(0); // calls logged in this sitting
+  const [history, setHistory] = useState([]); // remarks on the open candidate
+  const [historyFor, setHistoryFor] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -170,7 +173,19 @@ export default function CandidatesPage() {
     }
   }
 
-  const open = rows.find((r) => r.id === openId);
+  // Every remark ever left on the open candidate. Loaded on expand rather than
+  // with the list: forty candidates' call histories is a lot of rows to fetch
+  // for the one a recruiter is actually looking at.
+  useEffect(() => {
+    if (!openId) { setHistory([]); setHistoryFor(null); return; }
+    let alive = true;
+    fetch(`/api/candidates/${openId}/calls`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (alive && j) { setHistory(j.calls || []); setHistoryFor(openId); } })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [openId, logged]);
+
 
   return (
     <Shell
@@ -266,16 +281,36 @@ export default function CandidatesPage() {
                 {/* Call panel */}
                 {isOpen && (
                   <div className="border-t border-slate-200 p-4 space-y-4">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <a href={`tel:${c.phone}`} className="btn-primary">📞 Call {c.phone}</a>
-                      <a
-                        href={`https://wa.me/91${c.phone}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn-ghost"
-                      >
-                        WhatsApp
-                      </a>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a href={telLink(c.phone)} className="btn-primary">📞 Call {c.phone}</a>
+                      {(() => {
+                        // The message is built here so both links carry it and
+                        // nothing has to be retyped. A candidate with no role
+                        // attached gets the short nudge instead of a job pitch
+                        // full of blanks.
+                        const msg = c.requirement
+                          ? jobMessage({ candidate: c, requirement: c.requirement })
+                          : followUpMessage({ candidate: c });
+                        const web = waWebLink(c.phone, msg);
+                        const app = waMeLink(c.phone, msg);
+                        if (!web && !app) {
+                          return <span className="text-xs text-amber-700">Number too short for WhatsApp</span>;
+                        }
+                        return (
+                          <>
+                            {/* Two links, not one. wa.me redirects and asks
+                                first; web.whatsapp.com opens straight into an
+                                already-signed-in desktop session, which over a
+                                hundred messages a day is the whole difference. */}
+                            <a href={web} target="_blank" rel="noopener noreferrer" className="btn-ghost">
+                              WhatsApp Web
+                            </a>
+                            <a href={app} target="_blank" rel="noopener noreferrer" className="btn-ghost">
+                              WhatsApp app
+                            </a>
+                          </>
+                        );
+                      })()}
                       {c.requirement ? (
                         <span className="text-sm text-slate-600">
                           For <b className="text-chip-800">{c.requirement.designation}</b> at{" "}
@@ -421,13 +456,46 @@ export default function CandidatesPage() {
                           aria-label="Call back at"
                         />
                       </div>
-                      {c.lastCall && (
-                        <p className="text-xs text-slate-500 mt-2">
-                          Last time: <b>{c.lastCall.outcome}</b>
-                          {c.lastCall.notes ? ` — ${c.lastCall.notes}` : ""} ({ago(c.lastCall.calledAt)})
-                        </p>
-                      )}
                     </div>
+
+                    {/* Every remark, oldest at the bottom. This is what a
+                        recruiter reads before dialling, and what makes a
+                        handover to a colleague possible at all. */}
+                    {historyFor === c.id && history.length > 0 && (
+                      <div className="rounded border border-slate-200 bg-white">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 px-3 pt-3">
+                          Call history
+                        </div>
+                        <ul className="divide-y divide-slate-100 max-h-56 overflow-y-auto">
+                          {history.map((h) => (
+                            <li key={h.id} className="px-3 py-2 text-sm">
+                              <div className="flex items-baseline justify-between gap-3">
+                                <span className="font-medium text-chip-900">{h.outcome}</span>
+                                <span className="text-[11px] text-slate-400 whitespace-nowrap">
+                                  {new Date(h.calledAt).toLocaleString("en-IN", {
+                                    day: "numeric", month: "short", hour: "numeric",
+                                    minute: "2-digit", hour12: true,
+                                  })}
+                                  {h.user?.name ? ` · ${h.user.name}` : ""}
+                                </span>
+                              </div>
+                              {h.notes && <div className="text-slate-600 mt-0.5">{h.notes}</div>}
+                              {h.followUpAt && (
+                                <div className="text-[11px] text-sky-700 mt-0.5">
+                                  Call back {new Date(h.followUpAt).toLocaleString("en-IN", {
+                                    day: "numeric", month: "short", hour: "numeric",
+                                    minute: "2-digit", hour12: true,
+                                  })}
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {historyFor === c.id && history.length === 0 && (
+                      <p className="text-xs text-slate-400">No calls logged yet.</p>
+                    )}
                   </div>
                 )}
               </div>

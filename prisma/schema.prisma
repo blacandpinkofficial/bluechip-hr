@@ -155,6 +155,11 @@ model Requirement {
   cabFacility       String  @default("none") // none | oneway | twoway
   notes             String?
 
+  // Shown on the public careers page. Off by default: an opening is internal
+  // until someone decides otherwise, because the public version carries the
+  // client's name and pay range to anyone who looks.
+  publishOnline Boolean @default(false)
+
   status   String   @default("open") // open | hold | filled | closed
   priority String   @default("normal") // low | normal | high
   openedAt DateTime @default(now())
@@ -366,6 +371,20 @@ model Setting {
   // hard-coded because it is a commercial term, and commercial terms change.
   replacementDays    Int      @default(90)
   defaultPaymentDays Int      @default(30)
+
+  // Public careers page at /jobs. Off until someone turns it on, because
+  // turning it on publishes pay ranges and client names to the internet.
+  careersEnabled     Boolean  @default(false)
+  careersIntro       String?
+  careersEmail       String?
+
+  // Somewhere to connect an AI provider later. The key is stored here and
+  // NEVER returned to the browser — the settings API sends only whether one is
+  // present. Nothing consumes it yet; this is the socket, not the appliance.
+  aiEnabled          Boolean  @default(false)
+  aiProvider         String?  // anthropic | openai
+  aiApiKey           String?
+
   updatedAt          DateTime @updatedAt
 }
 

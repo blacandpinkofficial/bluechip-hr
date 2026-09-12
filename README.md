@@ -75,6 +75,42 @@ deploy/
 scripts/seed-owner.mjs
 ```
 
+## Handing it over
+
+The point of this section is that Blue Chip can run this without Ram, and leave
+it without anyone's permission.
+
+**Accounts.** Settings → Team. Create one account per person; roles are owner,
+manager and recruiter/telecaller. Passwords are generated and shown once — if
+the box is closed before the password is passed on, reset it and a new one
+appears. The last active owner cannot be demoted or deactivated, because there
+is no route back into commercials and invoicing from inside the app once that
+account is gone. Make a second owner before you need one.
+
+**Getting your data out.** Settings → Export everything. One workbook, every
+row, laid out as the sheets the desk already knows: Daily Call List, Interview
+Schedules, MTD Performance, plus call history and client commercials. No ticket,
+no request, no notice. Revenue columns appear only for roles that can see them
+on screen.
+
+**Removing Ram's access.** Settings → Team → deactivate his account. That signs
+him out immediately rather than at session expiry. Do it once a second owner
+exists. Server access (SSH to the box, the GitHub repo, the Cloudflare tunnel)
+is separate and has to be handed over outside the app.
+
+**If something breaks.**
+
+| Symptom | Where to look |
+| --- | --- |
+| Site does not load at all | `sudo systemctl status bluechip` on the server |
+| Loads but every page errors | `curl -s localhost:3100/api/health` — if `db` is not `up`, Postgres is the problem |
+| A deploy failed | It rolled back automatically. The previous build is running. Read `/var/log/bluechip-deploy.log` |
+| One screen errors, others fine | A query bug, not an outage. The page says which |
+
+**Backups.** There are none yet, and that is the largest single risk to this
+business. `pg_dump bluechip` on a nightly cron, copied off the box, is the
+minimum. Do not put this off.
+
 ## Rules worth knowing before you edit
 
 **A `route.js` may export only HTTP handlers and Next's segment config**

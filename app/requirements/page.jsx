@@ -91,6 +91,26 @@ export default function RequirementsPage() {
     return () => clearTimeout(t);
   }, [load, q]);
 
+  async function togglePublish(r) {
+    const next = !r.publishOnline;
+    setRows((rs) => rs.map((x) => (x.id === r.id ? { ...x, publishOnline: next } : x)));
+    try {
+      const res = await fetch(`/api/requirements/${r.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publishOnline: next }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError(j.error || "Could not change that.");
+        load();
+      }
+    } catch {
+      setError("Could not change that — check your connection.");
+      load();
+    }
+  }
+
   const totalOpenings = rows.reduce((n, r) => n + (r.openings || 0), 0);
   const unbillable = rows.filter((r) => !r.hasFee).length;
 
@@ -171,6 +191,7 @@ export default function RequirementsPage() {
                 <th className="px-4 py-2 font-medium text-slate-600">Experience</th>
                 <th className="px-4 py-2 font-medium text-slate-600">Take home</th>
                 <th className="px-4 py-2 font-medium text-slate-600">Must have</th>
+                <th className="px-4 py-2 font-medium text-slate-600">Careers page</th>
                 {canSeeFees && <th className="px-4 py-2 font-medium text-slate-600">Fee</th>}
               </tr>
             </thead>
@@ -200,6 +221,23 @@ export default function RequirementsPage() {
                         <span className="text-xs text-slate-400">No constraints recorded</span>
                       )}
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {/* Publishing an opening puts the client's name and pay
+                        range on a public page, so it is an explicit choice per
+                        opening rather than a global setting. */}
+                    <button
+                      onClick={() => togglePublish(r)}
+                      className={
+                        "text-[11px] px-2 py-0.5 rounded border transition " +
+                        (r.publishOnline
+                          ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                          : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50")
+                      }
+                      title={r.publishOnline ? "Visible on the careers page" : "Internal only"}
+                    >
+                      {r.publishOnline ? "Public" : "Internal"}
+                    </button>
                   </td>
                   {canSeeFees && (
                     <td className="px-4 py-3 whitespace-nowrap">

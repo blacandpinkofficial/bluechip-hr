@@ -16,6 +16,7 @@ const NAV = [
   { href: "/requirements", label: "Requirements", cap: "requirement.read" },
   { href: "/clients",      label: "Clients",      cap: "client.read" },
   { href: "/placements",   label: "Placements",   cap: "report.own" },
+  { href: "/reports",      label: "Reports",      cap: "report.own" },
   { href: "/import",       label: "Import",       cap: "import.run" },
   { href: "/users",        label: "Team",         cap: "user.read" },
   { href: "/settings",     label: "Settings",     cap: null },

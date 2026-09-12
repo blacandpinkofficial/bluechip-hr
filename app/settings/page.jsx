@@ -185,6 +185,118 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
+
+        {/* Careers page */}
+        {canEdit && settings && (
+          <div className="card p-5">
+            <div className="font-medium text-chip-900">Careers page</div>
+            <p className="text-sm text-slate-500 mt-1 mb-4">
+              A public list of openings at <code className="text-chip-700">/jobs</code>, with an
+              apply form that creates a candidate. Off by default, because turning it on
+              publishes client names and pay ranges to anyone who visits.
+            </p>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                id="s-careers" type="checkbox" className="mt-1 h-4 w-4 accent-chip-600"
+                defaultChecked={settings.careersEnabled}
+                onChange={(e) => saveSettings({ careersEnabled: e.target.checked })}
+              />
+              <span className="text-sm">
+                <span className="font-medium text-chip-900">Show the careers page</span>
+                <span className="block text-slate-500">
+                  Only openings you mark <b>Public</b> on the Requirements screen appear.
+                  Nothing is published just by switching this on.
+                </span>
+              </span>
+            </label>
+
+            <div className="mt-4">
+              <label htmlFor="s-intro" className="label">Introduction shown to candidates</label>
+              <textarea id="s-intro" className="input h-20" defaultValue={settings.careersIntro || ""}
+                placeholder="The right candidate for the right opportunity, at the right time."
+                onBlur={(e) => e.target.value !== (settings.careersIntro || "") &&
+                  saveSettings({ careersIntro: e.target.value })} />
+            </div>
+            <div className="mt-3">
+              <label htmlFor="s-cemail" className="label">Contact email on the page</label>
+              <input id="s-cemail" type="email" className="input" defaultValue={settings.careersEmail || ""}
+                onBlur={(e) => e.target.value !== (settings.careersEmail || "") &&
+                  saveSettings({ careersEmail: e.target.value })} />
+            </div>
+
+            <a href="/jobs" target="_blank" rel="noopener noreferrer" className="btn-ghost mt-4 inline-flex">
+              See what candidates see →
+            </a>
+          </div>
+        )}
+
+        {/* AI connection */}
+        {canEdit && settings && (
+          <div className="card p-5">
+            <div className="font-medium text-chip-900">AI connection</div>
+            <p className="text-sm text-slate-500 mt-1 mb-4">
+              Somewhere to put a provider key for later. To be plain about it:{" "}
+              <b>nothing in the app uses this yet</b> — it is the socket, not the appliance.
+              The key is stored on the server and never sent back to a browser.
+            </p>
+
+            <label className="flex items-start gap-3 cursor-pointer mb-4">
+              <input
+                id="s-ai" type="checkbox" className="mt-1 h-4 w-4 accent-chip-600"
+                defaultChecked={settings.aiEnabled}
+                onChange={(e) => saveSettings({ aiEnabled: e.target.checked })}
+              />
+              <span className="text-sm">
+                <span className="font-medium text-chip-900">Allow AI features</span>
+                <span className="block text-slate-500">
+                  Leave off until a feature exists that you have decided to use.
+                </span>
+              </span>
+            </label>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="s-aiprov" className="label">Provider</label>
+                <select id="s-aiprov" className="input" defaultValue={settings.aiProvider || ""}
+                  onChange={(e) => saveSettings({ aiProvider: e.target.value })}>
+                  <option value="">Not set</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="s-aikey" className="label">
+                  API key {settings.aiKeySet && <span className="text-emerald-700">· one is stored</span>}
+                </label>
+                <input id="s-aikey" type="password" className="input" autoComplete="off"
+                  defaultValue={settings.aiApiKey || ""}
+                  placeholder={settings.aiKeySet ? "A key is saved" : "Paste a key"}
+                  onBlur={(e) => e.target.value !== (settings.aiApiKey || "") &&
+                    saveSettings({ aiApiKey: e.target.value })} />
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">
+              Clearing the field removes the stored key. Leaving the dots untouched keeps it —
+              saving another field on this page will not overwrite it.
+            </p>
+          </div>
+        )}
+
+        {/* Export */}
+        <div className="card p-5">
+          <div className="font-medium text-chip-900">Export everything</div>
+          <p className="text-sm text-slate-500 mt-1 mb-4">
+            One workbook with every candidate, call, interview, placement, client and
+            opening — laid out as the sheets the desk already knows. Nobody should feel
+            locked in; you can walk back to spreadsheets whenever you want.
+          </p>
+          <a href="/api/export" className="btn-primary inline-flex">Download workbook</a>
+          <p className="text-xs text-slate-500 mt-3">
+            Revenue and client commercials are included only if your role can see them
+            on screen. An export is not a way around a permission.
+          </p>
+        </div>
       </div>
     </Shell>
   );

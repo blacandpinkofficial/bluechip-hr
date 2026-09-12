@@ -70,6 +70,7 @@ export async function GET(req) {
         cabFacility: r.cabFacility,
         status: r.status,
         priority: r.priority,
+        publishOnline: r.publishOnline,
         openedAt: r.openedAt,
         candidateCount: r._count.candidates,
         interviewCount: r._count.interviews,

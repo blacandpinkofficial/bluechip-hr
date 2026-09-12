@@ -10,7 +10,11 @@
 
 import { NextResponse } from "next/server";
 
-const PUBLIC = ["/login", "/api/auth/login", "/api/health"];
+// Everything a signed-out visitor may reach. The careers page and its two
+// endpoints are here deliberately; they enforce their own rules (the page can
+// be switched off, and the apply route is rate limited) rather than relying on
+// a session that a candidate will never have.
+const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/jobs", "/api/public"];
 
 export function middleware(req) {
   const { pathname } = req.nextUrl;
