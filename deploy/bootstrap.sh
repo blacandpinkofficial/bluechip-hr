@@ -110,7 +110,7 @@ echo "  Logs:          sudo journalctl -u $SERVICE -f"
 echo "  Deploy later:  cd $APP && bash deploy/bluechip-deploy.sh"
 echo
 echo "  Still to do, whenever you are ready:"
-echo "    • point app.bluechiphr.com at $(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo '<this box>')"
+echo "    • point app.bluechiphr.com at $(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo '<this box>')"
 echo "    • sudo certbot --nginx -d app.bluechiphr.com"
 echo
 echo "  Pulse was not restarted at any point in this run."

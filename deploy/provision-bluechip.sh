@@ -276,7 +276,7 @@ echo "════════════════════════�
 ok "Provisioning complete. Pulse was not restarted and is untouched."
 echo
 echo "Next, in order:"
-echo "  1. Point $BC_HOST at this box's IP:  $(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo '<run: curl ifconfig.me>')"
+echo "  1. Point $BC_HOST at this box's IP:  $(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo '<run: curl ifconfig.me>')"
 echo "  2. Certificate:  sudo certbot --nginx -d $BC_HOST"
 echo "  3. Clone the Blue Chip repo into $BC_DIR and deploy."
 echo

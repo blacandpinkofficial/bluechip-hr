@@ -21,8 +21,13 @@ async function counts() {
       prisma.candidateCall.count({ where: { calledAt: { gte: today } } }),
       prisma.interview.count({ where: { scheduledAt: { gte: today } } }),
       // No terms on the opening AND none on the client — nothing to bill against.
+      //
+      // `client: { is: {...} }`, not `client: {...}`. Prisma rejects the
+      // shorthand on a to-one relation and the error it raises names only the
+      // offending argument, so it reads like the column is missing rather than
+      // the filter being shaped wrong.
       prisma.requirement.count({
-        where: { status: "open", feeType: null, client: { feeType: null } },
+        where: { status: "open", feeType: null, client: { is: { feeType: null } } },
       }),
     ]);
 
@@ -51,12 +56,22 @@ export default async function Dashboard() {
   if (!session) redirect("/login");
   const { user } = session;
 
+  // A failed query is not an unreachable database, and saying so sends whoever
+  // reads it looking in the wrong place. Check the connection separately, so
+  // the screen can tell the difference between "Postgres is down" and "one of
+  // my queries is wrong".
   let c = null;
-  let dbError = null;
+  let dbDown = false;
+  let queryError = null;
   try {
     c = await counts();
   } catch (e) {
-    dbError = e?.message || "Database unreachable";
+    queryError = e?.message || String(e);
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch {
+      dbDown = true;
+    }
   }
 
   const today = new Date().toLocaleDateString("en-IN", {
@@ -65,9 +80,21 @@ export default async function Dashboard() {
 
   return (
     <Shell title="Today" subtitle={today}>
-      {dbError ? (
+      {queryError ? (
         <div role="alert" className="card border-red-200 bg-red-50 p-4 text-sm text-red-800">
-          Cannot reach the database: {dbError}
+          <div className="font-medium">
+            {dbDown
+              ? "The database is not responding."
+              : "Today's figures could not be loaded."}
+          </div>
+          <p className="mt-1 text-red-700">
+            {dbDown
+              ? "Everything else will fail too until it is back. This is a server problem, not something you did."
+              : "The database is up — one of the queries behind this page is at fault. The rest of the app is unaffected; send this to Ram."}
+          </p>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-[11px] text-red-900/80">
+            {queryError}
+          </pre>
         </div>
       ) : (
         <>
