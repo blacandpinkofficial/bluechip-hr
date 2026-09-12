@@ -1,0 +1,122 @@
+// POST /api/candidates/[id]/calls — log one dial.
+//
+// This is the single most-used write in the whole app, and the one that makes
+// the "Daily productivity" tab of the old workbook unnecessary: counting rows
+// here by recruiter and day IS "No of Calls for the day". Nobody tallies their
+// own calls at seven in the evening any more, and nobody rounds up.
+//
+// It does three things atomically — append the call, stamp the candidate's
+// last-contacted, bump the counter — because a call that logs but doesn't move
+// the candidate out of the "never called" queue means the next recruiter dials
+// them again ten minutes later.
+
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { requireCapability, can } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const OUTCOMES = ["connected", "no-answer", "busy", "wrong-number", "not-interested", "callback"];
+
+// What a call outcome implies about the candidate's stage, when the stage
+// hasn't been set by hand. Only ever moves forward: a no-answer on someone
+// already lined up must not drag them back to "contacted".
+const STAGE_ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined", "dropped"];
+
+export async function POST(req, { params }) {
+  const gate = await requireCapability("candidate.write");
+  if (!gate.ok) return gate.response;
+
+  try {
+    const candidateId = params?.id;
+    const b = await req.json().catch(() => ({}));
+    const outcome = String(b.outcome || "").trim();
+
+    if (!OUTCOMES.includes(outcome)) {
+      return NextResponse.json(
+        { error: `Outcome must be one of: ${OUTCOMES.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
+    if (!candidate) return NextResponse.json({ error: "No such candidate." }, { status: 404 });
+
+    if (!can(gate.user.role, "report.desk") && candidate.ownerId && candidate.ownerId !== gate.user.id) {
+      return NextResponse.json(
+        { error: "This candidate belongs to another recruiter." },
+        { status: 403 }
+      );
+    }
+
+    let followUpAt = null;
+    if (b.followUpAt) {
+      const d = new Date(b.followUpAt);
+      if (!Number.isNaN(d.getTime())) followUpAt = d;
+    }
+    if (outcome === "callback" && !followUpAt) {
+      return NextResponse.json(
+        { error: "A callback needs a time — otherwise it is just a note nobody sees again." },
+        { status: 400 }
+      );
+    }
+
+    // A connected call means they have been spoken to. Anything else means the
+    // phone rang; it does not.
+    const implied = outcome === "connected" ? "contacted"
+                  : outcome === "not-interested" ? "dropped"
+                  : null;
+    const shouldAdvance =
+      implied &&
+      STAGE_ORDER.indexOf(implied) > STAGE_ORDER.indexOf(candidate.stage) &&
+      // "dropped" is terminal and must never be inferred over a real outcome
+      // like "selected" just because someone logged a stray call.
+      !(implied === "dropped" && ["selected", "joined"].includes(candidate.stage));
+
+    const [call] = await prisma.$transaction([
+      prisma.candidateCall.create({
+        data: {
+          candidateId,
+          userId: gate.user.id,
+          outcome,
+          notes: String(b.notes || "").trim() || null,
+          followUpAt,
+        },
+      }),
+      prisma.candidate.update({
+        where: { id: candidateId },
+        data: {
+          lastContactedAt: new Date(),
+          callCount: { increment: 1 },
+          // Set when a callback was promised, CLEARED otherwise. Clearing is
+          // the half that matters: without it, making the callback leaves the
+          // candidate sitting in the "due" queue permanently.
+          nextFollowUpAt: followUpAt,
+          ...(shouldAdvance ? { stage: implied } : {}),
+          // Claim an unowned candidate for whoever actually did the work.
+          ...(candidate.ownerId ? {} : { ownerId: gate.user.id }),
+        },
+      }),
+    ]);
+
+    return NextResponse.json({ call, stage: shouldAdvance ? implied : candidate.stage }, { status: 201 });
+  } catch (e) {
+    console.error("[POST /api/candidates/[id]/calls]", e?.message || e);
+    return NextResponse.json({ error: "Could not log the call." }, { status: 500 });
+  }
+}
+
+export async function GET(req, { params }) {
+  const gate = await requireCapability("candidate.read");
+  if (!gate.ok) return gate.response;
+
+  const calls = await prisma.candidateCall.findMany({
+    where: { candidateId: params?.id },
+    orderBy: { calledAt: "desc" },
+    take: 50,
+    include: { user: { select: { name: true } } },
+  });
+
+  return NextResponse.json({ calls });
+}

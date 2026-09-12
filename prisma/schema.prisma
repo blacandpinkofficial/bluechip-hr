@@ -215,6 +215,11 @@ model Candidate {
   resumeText  String? // extracted text, for search
 
   lastContactedAt DateTime?
+  // The single outstanding callback, rewritten on every logged call. Derived
+  // from CandidateCall, but stored: "is a callback due?" is read on every load
+  // of the busiest screen, and asking it of the call history means either a
+  // correlated subquery or fetching every call of every candidate.
+  nextFollowUpAt  DateTime?
   callCount       Int       @default(0) // denormalised for list sorting; CandidateCall is the truth
   archived        Boolean   @default(false)
 
@@ -230,6 +235,7 @@ model Candidate {
   // morning without knowing.
   @@unique([phone])
   @@index([stage, archived])
+  @@index([nextFollowUpAt])
   @@index([ownerId, lastContactedAt])
   @@index([requirementId])
   @@index([createdAt])

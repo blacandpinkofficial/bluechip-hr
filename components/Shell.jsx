@@ -11,6 +11,8 @@ import { useEffect, useState } from "react";
 
 const NAV = [
   { href: "/dashboard",    label: "Today",        cap: null },
+  { href: "/candidates",   label: "Calls",        cap: "candidate.read" },
+  { href: "/interviews",   label: "Interviews",   cap: "interview.read" },
   { href: "/requirements", label: "Requirements", cap: "requirement.read" },
   { href: "/clients",      label: "Clients",      cap: "client.read" },
   { href: "/import",       label: "Import",       cap: "import.run" },

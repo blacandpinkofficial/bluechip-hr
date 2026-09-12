@@ -1,0 +1,230 @@
+// /api/candidates — the people the desk is calling.
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { requireCapability, ownScope, can } from "@/lib/auth";
+import { parseRupees } from "@/lib/money";
+import { screen } from "@/lib/screening";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// A recruiter's working day, as filters.
+const QUEUES = {
+  // Everyone, newest first.
+  all: () => ({}),
+  // Never been called. The top of the pile.
+  new: () => ({ callCount: 0 }),
+  // A callback was promised and the time has come.
+  //
+  // This reads Candidate.nextFollowUpAt, NOT "any call with a past
+  // followUpAt". The latter looks equivalent and is not: once you actually
+  // make the callback, that old call row still carries its past followUpAt,
+  // so the candidate stays in the queue forever. Within a week the queue is
+  // all handled callbacks and the recruiter stops trusting it — which is the
+  // one queue that must never be wrong.
+  due: (now) => ({
+    nextFollowUpAt: { lte: now },
+    stage: { notIn: ["joined", "dropped"] },
+  }),
+  // Live but going cold — the candidates quietly lost to inattention.
+  cold: (now) => ({
+    stage: { in: ["contacted", "shortlisted", "lined-up", "interviewed"] },
+    OR: [
+      { lastContactedAt: { lt: new Date(now.getTime() - 3 * 86400000) } },
+      { lastContactedAt: null },
+    ],
+  }),
+};
+
+export async function GET(req) {
+  const gate = await requireCapability("candidate.read");
+  if (!gate.ok) return gate.response;
+
+  const url = new URL(req.url);
+  const queue = url.searchParams.get("queue") || "all";
+  const stage = url.searchParams.get("stage") || "";
+  const q = (url.searchParams.get("q") || "").trim();
+  const requirementId = url.searchParams.get("requirement") || "";
+  const mine = url.searchParams.get("mine") === "1";
+  const now = new Date();
+
+  const queueWhere = (QUEUES[queue] || QUEUES.all)(now);
+
+  // Built as an AND list rather than one spread object. Both the "cold" queue
+  // and the search use a top-level OR, and spreading them into the same object
+  // silently discards the first — the search would quietly widen the queue
+  // instead of narrowing it, and nothing would look broken.
+  const where = {
+    AND: [
+      { archived: false },
+      queueWhere,
+      stage ? { stage } : {},
+      requirementId ? { requirementId } : {},
+      // A recruiter always sees only their own; a manager can narrow to theirs.
+      mine ? { ownerId: gate.user.id } : ownScope(gate.user),
+      q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q } },
+              { designation: { contains: q, mode: "insensitive" } },
+              { skills: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {},
+    ],
+  };
+
+  const rows = await prisma.candidate.findMany({
+    where,
+    orderBy:
+      queue === "due" ? [{ lastContactedAt: "asc" }]
+      : queue === "cold" ? [{ lastContactedAt: "asc" }]
+      : [{ createdAt: "desc" }],
+    take: 200,
+    include: {
+      owner: { select: { id: true, name: true } },
+      requirement: {
+        include: { client: { select: { name: true } } },
+      },
+      calls: {
+        orderBy: { calledAt: "desc" },
+        take: 1,
+        select: { calledAt: true, outcome: true, notes: true, followUpAt: true },
+      },
+      _count: { select: { calls: true, interviews: true } },
+    },
+  });
+
+  return NextResponse.json({
+    candidates: rows.map((c) => {
+      // Screening runs here, not in the browser: the requirement's criteria
+      // are the client's business terms and a recruiter's device has no need
+      // of the whole rulebook, only the verdict for the person in front of them.
+      const s = c.requirement ? screen(c, c.requirement) : null;
+      return {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        email: c.email,
+        designation: c.designation,
+        location: c.location,
+        expMonths: c.expMonths,
+        currentCtc: c.currentCtc,
+        expectedCtc: c.expectedCtc,
+        noticeDays: c.noticeDays,
+        source: c.source,
+        skills: c.skills,
+        stage: c.stage,
+        status: c.status,
+        rating: c.rating,
+        hasRelieving: c.hasRelieving,
+        hasArrears: c.hasArrears,
+        education: c.education,
+        callCount: c.callCount,
+        lastContactedAt: c.lastContactedAt,
+        interviewCount: c._count.interviews,
+        lastCall: c.calls[0] || null,
+        owner: c.owner,
+        requirement: c.requirement && {
+          id: c.requirement.id,
+          designation: c.requirement.designation,
+          location: c.requirement.location,
+          clientName: c.requirement.client?.name,
+          takeHomeMin: c.requirement.takeHomeMin,
+          takeHomeMax: c.requirement.takeHomeMax,
+          relievingRequired: c.requirement.relievingRequired,
+          arrearsAllowed: c.requirement.arrearsAllowed,
+          educationMin: c.requirement.educationMin,
+          expMinMonths: c.requirement.expMinMonths,
+          expMaxMonths: c.requirement.expMaxMonths,
+        },
+        screening: s,
+      };
+    }),
+    queue,
+    canSeeWholeDesk: can(gate.user.role, "report.desk"),
+  });
+}
+
+export async function POST(req) {
+  const gate = await requireCapability("candidate.write");
+  if (!gate.ok) return gate.response;
+
+  try {
+    const b = await req.json().catch(() => ({}));
+    const name = String(b.name || "").trim();
+    const phone = String(b.phone || "").replace(/[^\d+]/g, "").slice(-10);
+
+    if (!name) return NextResponse.json({ error: "Enter the candidate's name." }, { status: 400 });
+    if (phone.length !== 10) {
+      return NextResponse.json(
+        { error: "Enter a 10-digit mobile number." },
+        { status: 400 }
+      );
+    }
+
+    // One phone number, one person. Without this the same candidate arrives
+    // three times from three sources and two recruiters call them the same
+    // morning — which is exactly what the spreadsheet does today. Tell the
+    // caller who already owns them rather than just refusing.
+    const existing = await prisma.candidate.findUnique({
+      where: { phone },
+      include: { owner: { select: { name: true } } },
+    });
+    if (existing) {
+      return NextResponse.json(
+        {
+          error: `${existing.name} is already on the list${existing.owner ? ` (with ${existing.owner.name})` : ""}.`,
+          candidateId: existing.id,
+          duplicate: true,
+        },
+        { status: 409 }
+      );
+    }
+
+    const created = await prisma.candidate.create({
+      data: {
+        name,
+        phone,
+        email: String(b.email || "").trim().toLowerCase() || null,
+        designation: String(b.designation || "").trim() || null,
+        location: String(b.location || "").trim() || null,
+        expMonths: intOrNull(b.expMonths),
+        currentCtc: parseRupees(b.currentCtc),
+        expectedCtc: parseRupees(b.expectedCtc),
+        noticeDays: intOrNull(b.noticeDays),
+        source: String(b.source || "").trim() || null,
+        skills: String(b.skills || "").trim() || null,
+        education: String(b.education || "").trim() || null,
+        hasRelieving: typeof b.hasRelieving === "boolean" ? b.hasRelieving : null,
+        hasArrears: typeof b.hasArrears === "boolean" ? b.hasArrears : null,
+        requirementId: b.requirementId || null,
+        ownerId: gate.user.id,
+        stage: "new",
+      },
+    });
+
+    await prisma.auditLog
+      .create({
+        data: {
+          userId: gate.user.id,
+          action: "create",
+          entity: "Candidate",
+          entityId: created.id,
+          summary: `Added ${created.name} (${created.phone})`,
+        },
+      })
+      .catch((e) => console.error("[candidates] audit write failed:", e?.message));
+
+    return NextResponse.json({ candidate: created }, { status: 201 });
+  } catch (e) {
+    console.error("[POST /api/candidates]", e?.message || e);
+    return NextResponse.json({ error: "Could not save the candidate." }, { status: 500 });
+  }
+}
+
+function intOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+}
