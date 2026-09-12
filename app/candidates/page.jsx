@@ -96,6 +96,8 @@ export default function CandidatesPage() {
   const [logged, setLogged] = useState(0); // calls logged in this sitting
   const [history, setHistory] = useState([]); // remarks on the open candidate
   const [historyFor, setHistoryFor] = useState(null);
+  const [script, setScript] = useState(null);
+  const [scriptBusy, setScriptBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -177,6 +179,7 @@ export default function CandidatesPage() {
   // with the list: forty candidates' call histories is a lot of rows to fetch
   // for the one a recruiter is actually looking at.
   useEffect(() => {
+    setScript(null);
     if (!openId) { setHistory([]); setHistoryFor(null); return; }
     let alive = true;
     fetch(`/api/candidates/${openId}/calls`)
@@ -186,6 +189,22 @@ export default function CandidatesPage() {
     return () => { alive = false; };
   }, [openId, logged]);
 
+
+  async function loadScript(id, withAi) {
+    if (scriptBusy) return;
+    setScriptBusy(true);
+    setError("");
+    try {
+      const r = await fetch(`/api/candidates/${id}/script${withAi ? "?ai=1" : ""}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not build a script.");
+      setScript(j);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setScriptBusy(false);
+    }
+  }
 
   return (
     <Shell
@@ -377,6 +396,102 @@ export default function CandidatesPage() {
                         )}
                       </div>
                     )}
+
+                    {/* What to say. Built from the role and this candidate;
+                        works with no AI configured, and says so. */}
+                    <div className="rounded border border-chip-200 bg-chip-50/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button className="btn-ghost text-sm" disabled={scriptBusy}
+                          onClick={() => loadScript(c.id, false)}>
+                          {scriptBusy && !script ? "Building…" : "What do I say?"}
+                        </button>
+                        {script?.aiAvailable && (
+                          <button className="btn-ghost text-sm" disabled={scriptBusy}
+                            onClick={() => loadScript(c.id, true)}>
+                            {scriptBusy ? "Asking AI…" : "Rewrite with AI"}
+                          </button>
+                        )}
+                        {script?.aiError && (
+                          <span className="text-xs text-amber-700">
+                            AI unavailable ({script.aiError}) — this is the built-in script.
+                          </span>
+                        )}
+                      </div>
+
+                      {script?.script && (
+                        <div className="mt-3 grid md:grid-cols-2 gap-4">
+                          <div className="space-y-3">
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open with</div>
+                              {script.script.opener.map((l, i) => (
+                                <p key={i} className="text-sm text-chip-900 mt-1">{l}</p>
+                              ))}
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Then say</div>
+                              <ul className="mt-1 space-y-1">
+                                {script.script.pitch.map((l, i) => (
+                                  <li key={i} className="text-sm text-slate-700">• {l}</li>
+                                ))}
+                              </ul>
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Ask, in this order ({script.script.checklist.remaining} left)
+                              </div>
+                              <ul className="mt-1 space-y-1">
+                                {script.script.checklist.items.map((it) => (
+                                  <li key={it.key} className={"text-sm " + (it.done ? "text-slate-400 line-through" : it.critical ? "text-red-800 font-medium" : "text-slate-700")}>
+                                    {it.done ? "✓" : "○"} {it.ask}
+                                    {!it.done && <span className="block text-[11px] text-slate-500 ml-4">{it.why}</span>}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Where this job leads
+                              </div>
+                              <ol className="mt-1 space-y-1">
+                                {script.script.career.steps.map((st, i) => (
+                                  <li key={i} className="text-sm text-slate-700">
+                                    <b className="text-chip-900">{st.title}</b>
+                                    <span className="text-slate-500"> — {st.when}</span>
+                                    <span className="block text-[11px] text-slate-500">{st.note}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                              {script.script.career.note && (
+                                <p className="text-[11px] text-slate-500 mt-1">{script.script.career.note}</p>
+                              )}
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">If they say…</div>
+                              <ul className="mt-1 space-y-2">
+                                {script.script.objections.slice(0, 4).map((o, i) => (
+                                  <li key={i} className="text-sm">
+                                    <span className="text-slate-500">&ldquo;{o.says}&rdquo;</span>
+                                    <span className="block text-slate-700">{o.answer}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+
+                          {script.script.ai && (
+                            <div className="md:col-span-2 rounded border border-slate-200 bg-white p-3">
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                                AI version
+                              </div>
+                              <pre className="whitespace-pre-wrap text-sm text-slate-700 font-sans">{script.script.ai}</pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
 
                     {/* Answers captured mid-call */}
                     <div className="rounded border border-slate-200 bg-slate-50 p-3 space-y-2">

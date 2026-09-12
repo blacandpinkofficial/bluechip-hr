@@ -91,6 +91,11 @@ export default function ImportPage() {
     <Shell
       title="Import the job description sheet"
       subtitle="Nothing is saved until you approve it below."
+      actions={
+        <a href="/import/candidates" className="btn-ghost">
+          Import candidates instead
+        </a>
+      }
     >
       {result && (
         <div className="card border-emerald-200 bg-emerald-50 p-4 mb-6">

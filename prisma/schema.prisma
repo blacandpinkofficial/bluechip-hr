@@ -48,6 +48,14 @@ model User {
   candidates Candidate[]     @relation("CandidateOwner")
   placements Placement[]
   notes      ClientNote[]
+  documents  Document[]
+
+  attendance       Attendance[]
+  salaryStructures SalaryStructure[]
+  incentiveRules   IncentiveRule[]
+  payrollItems     PayrollItem[]
+  chatSent         ChatMessage[]     @relation("ChatAuthor")
+  chatReceived     ChatMessage[]     @relation("ChatRecipient")
 
   @@index([active, role])
 }
@@ -96,6 +104,7 @@ model Client {
   notes        ClientNote[]
   requirements Requirement[]
   placements   Placement[]
+  documents    Document[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -388,6 +397,38 @@ model Setting {
   updatedAt          DateTime @updatedAt
 }
 
+// Anything the desk needs to look up: client process notes, a handover before
+// someone goes on leave, a training document, a scanned agreement.
+//
+// The FILE lives on disk, not in Postgres. A 4 MB PDF in a row makes every
+// backup and every restore of the whole database slower, and the database is
+// the thing that must come back fastest after a failure.
+model Document {
+  id          String   @id @default(cuid())
+  title       String
+  kind        String   @default("note") // note | handover | process | training | client | policy
+  body        String? // for typed notes and handovers — searchable as-is
+  // For uploads. storageKey is a path relative to the uploads directory, never
+  // a path the client supplies.
+  storageKey  String?
+  filename    String?
+  mimeType    String?
+  bytes       Int?
+  tags        String? // comma separated
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id])
+  authorId    String?
+  author      User?    @relation(fields: [authorId], references: [id])
+  pinned      Boolean  @default(false)
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([kind, archived])
+  @@index([clientId])
+  @@index([createdAt])
+}
+
 model AuditLog {
   id        String   @id @default(cuid())
   userId    String?
@@ -417,4 +458,156 @@ model ImportBatch {
   createdAt  DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATTENDANCE, PAY AND THE MONTHLY NUMBERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// One row per person per day. The unique constraint on (userId, day) is what
+// stops a double check-in creating two rows and paying the day twice.
+//
+// `day` is a DATE at midnight IST, not a timestamp. Storing "the day this
+// belongs to" separately from the check-in instant is what makes a night shift
+// that crosses midnight still belong to the shift it started in.
+model Attendance {
+  id       String   @id @default(cuid())
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day      DateTime @db.Date
+  checkIn  DateTime?
+  checkOut DateTime?
+
+  // present | leave | holiday | week-off | absent | half-day
+  // leave/holiday/week-off are PAID and contribute a standard day.
+  status   String   @default("present")
+  note     String?
+
+  // Who marked it, when it was not the person themselves. A manager correcting
+  // a forgotten check-out should be visible as a correction, not indistinguishable
+  // from the person's own tap.
+  markedById String?
+  source     String  @default("self") // self | manager | import
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, day])
+  @@index([day])
+  @@index([userId, day])
+}
+
+// What someone is paid, and from when. Never edited in place: a change writes a
+// NEW row with a new effectiveFrom, so last month's payslip can still be
+// recomputed from the figures that were true last month. Editing the salary in
+// place is how a re-run of March quietly pays April's rate.
+model SalaryStructure {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthlyGross       Int // rupees
+  standardHoursPerDay Int     @default(8)
+  workingDaysPerWeek  Int     @default(6)
+  effectiveFrom      DateTime @db.Date
+  note               String?
+  createdById        String?
+  createdAt          DateTime @default(now())
+
+  @@index([userId, effectiveFrom])
+}
+
+// How incentive is earned. One rule may cover the whole desk (userId null) or
+// one person (userId set); the person's own rule wins.
+model IncentiveRule {
+  id         String   @id @default(cuid())
+  name       String
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       String // per-joining | percent-of-revenue | slab
+  perJoining Int? // rupees per joined candidate
+  revenueBps Int? // 5% = 500
+  slabsJson  String   @default("[]") // [{ "min": 3, "amount": 5000 }]
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, active])
+}
+
+// A month, locked. Payroll is computed live on screen until someone locks it;
+// after that the FIGURES ARE FROZEN into PayrollItem rows. A payslip that
+// changes after it was handed over is not a payslip.
+model PayrollRun {
+  id        String   @id @default(cuid())
+  month     String   @unique // "2026-09"
+  status    String   @default("draft") // draft | locked | paid
+  lockedAt  DateTime?
+  lockedById String?
+  paidOn    DateTime?
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PayrollItem[]
+}
+
+model PayrollItem {
+  id     String     @id @default(cuid())
+  runId  String
+  run    PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  userId String
+  user   User       @relation(fields: [userId], references: [id])
+
+  // Every figure as it was at lock time. Copied, not joined — the whole point
+  // of locking is that a later edit to the salary structure cannot reach back.
+  monthlyGross   Int
+  standardHours  Float
+  workedHours    Float
+  presentDays    Int @default(0)
+  paidLeaveDays  Int @default(0)
+  absentDays     Int @default(0)
+  earnedBasic    Int
+  incentive      Int @default(0)
+  incentiveBasis String?
+  joinings       Int @default(0)
+  revenue        Int @default(0)
+  deductions     Int @default(0)
+  netPay         Int
+
+  @@unique([runId, userId])
+  @@index([userId])
+}
+
+// Desk chat. toUserId null = the whole desk; set = a direct message.
+//
+// Deliberately not a full messenger. It exists so "did you call the AGS
+// candidate back?" happens inside the app next to the candidate, instead of on
+// a personal WhatsApp where it is lost when someone leaves.
+model ChatMessage {
+  id        String   @id @default(cuid())
+  authorId  String
+  author    User     @relation("ChatAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  toUserId  String?
+  toUser    User?    @relation("ChatRecipient", fields: [toUserId], references: [id], onDelete: Cascade)
+  body      String
+  // Optional pointer at what is being discussed, so a message can be opened.
+  refType   String? // candidate | requirement | client | placement
+  refId     String?
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([toUserId, createdAt])
+  @@index([authorId, createdAt])
+  @@index([createdAt])
+}
+
+// Last time each person read each conversation, so unread counts are real.
+// peerKey is "desk" for the desk channel, otherwise the other person's id.
+model ChatRead {
+  id         String   @id @default(cuid())
+  userId     String
+  peerKey    String
+  lastReadAt DateTime @default(now())
+
+  @@unique([userId, peerKey])
 }

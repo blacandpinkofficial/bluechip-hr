@@ -185,8 +185,14 @@ ok "'$BC_ROLE' is refused by '$PULSE_DB'  ← the wall is real"
 echo
 echo "3. Application directory"
 sudo mkdir -p "$BC_DIR"
+sudo mkdir -p /opt/bluechip/uploads
 sudo chown -R ubuntu:ubuntu /opt/bluechip
+chmod 750 /opt/bluechip/uploads
 ok "$BC_DIR ready, owned by ubuntu"
+# Deliberately OUTSIDE the app directory: everything under $BC_DIR is a git
+# checkout that `git pull` and `next build` churn. A deploy must never be able
+# to delete a client's signed agreement.
+ok "/opt/bluechip/uploads ready (outside the git checkout, so deploys cannot touch it)"
 
 if [ -n "$BC_PASS" ]; then
   sudo -u ubuntu tee "$BC_DIR/.env" >/dev/null <<ENV
