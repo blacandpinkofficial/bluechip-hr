@@ -8,9 +8,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+// The exact figure. This rounded to the nearest thousand and then formatted the
+// result to look precise, so an opening paying ₹18,500 was published to the
+// public internet as "₹19,000 a month" — a number no client agreed to and a
+// candidate could reasonably hold the desk to.
 function money(n) {
   if (n == null) return null;
-  return n >= 1000 ? `₹${Math.round(n / 1000)},000` : `₹${n}`;
+  return `₹${Math.round(n).toLocaleString("en-IN")}`;
 }
 function pay(j) {
   const lo = money(j.takeHomeMin), hi = money(j.takeHomeMax);

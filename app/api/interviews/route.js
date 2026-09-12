@@ -8,6 +8,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
+import { istDay } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,8 +23,9 @@ export async function GET(req) {
   const url = new URL(req.url);
   const when = url.searchParams.get("when") || "upcoming"; // today | upcoming | past | all
 
-  const now = new Date();
-  const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
+  // The IST day. On a UTC box, setHours(0,0,0,0) put the boundary at 05:30 IST,
+  // so an early-morning interview showed under yesterday.
+  const startOfToday = istDay();
   const endOfToday = new Date(startOfToday.getTime() + 86400000);
 
   const where =
@@ -112,6 +114,11 @@ export async function POST(req) {
     ]);
     if (!candidate) return NextResponse.json({ error: "No such candidate." }, { status: 404 });
     if (!requirement) return NextResponse.json({ error: "No such requirement." }, { status: 404 });
+    if (!mayTouch(gate.user, candidate)) {
+      // Booking against someone else's candidate rewrites their stage and can
+      // reassign the candidate to a different opening.
+      return NextResponse.json({ error: "That candidate belongs to someone else on the desk." }, { status: 403 });
+    }
 
     const mode = MODES.includes(b.mode) ? b.mode : "telephonic";
 
@@ -163,6 +170,20 @@ export async function POST(req) {
   }
 }
 
+/**
+ * May this person touch this candidate?
+ *
+ * A recruiter owns their own pipeline and nobody else's. Without this check,
+ * PATCHing a colleague's interview with outcome "rejected" moves THEIR
+ * candidate to dropped — quietly killing a live placement from another
+ * account. GET was already scoped; the writes were not.
+ */
+function mayTouch(user, candidate) {
+  if (!candidate) return false;
+  if (can(user.role, "report.desk")) return true;
+  return !candidate.ownerId || candidate.ownerId === user.id;
+}
+
 export async function PATCH(req) {
   const gate = await requireCapability("interview.write");
   if (!gate.ok) return gate.response;
@@ -174,9 +195,12 @@ export async function PATCH(req) {
 
     const existing = await prisma.interview.findUnique({
       where: { id },
-      include: { candidate: { select: { id: true, stage: true, name: true } } },
+      include: { candidate: { select: { id: true, stage: true, name: true, ownerId: true } } },
     });
     if (!existing) return NextResponse.json({ error: "No such interview." }, { status: 404 });
+    if (!mayTouch(gate.user, existing.candidate)) {
+      return NextResponse.json({ error: "That interview is on someone else's candidate." }, { status: 403 });
+    }
 
     const data = {};
     if (b.attended !== undefined) data.attended = b.attended === null ? null : !!b.attended;

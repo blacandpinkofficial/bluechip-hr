@@ -31,6 +31,8 @@ function ago(d) {
 export default function UsersPage() {
   const [users, setUsers] = useState([]);
   const [me, setMe] = useState(null);
+  // Nothing here happens on one click any more.
+  const [confirm, setConfirm] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
@@ -136,6 +138,38 @@ export default function UsersPage() {
         </div>
       )}
 
+      {confirm && (
+        <div className="card border-amber-300 bg-amber-50 p-4 mb-4">
+          <div className="text-sm text-amber-900">
+            {confirm.kind === "reset" ? (
+              <>
+                Reset <strong>{confirm.name}</strong>&rsquo;s password? They are signed out of every
+                device immediately, and the new password is shown once — you have to pass it on
+                yourself. If they are mid-call, they lose the screen.
+              </>
+            ) : (
+              <>
+                Deactivate <strong>{confirm.name}</strong>? They are signed out at once and cannot
+                sign back in. Their candidates, calls and placements stay exactly where they are.
+              </>
+            )}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button
+              className="btn-primary"
+              onClick={() => {
+                const c = confirm;
+                setConfirm(null);
+                patch(c.id, c.kind === "reset" ? { resetPassword: true } : { active: false });
+              }}
+            >
+              {confirm.kind === "reset" ? "Reset it" : "Deactivate"}
+            </button>
+            <button className="btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div role="alert" className="card border-red-200 bg-red-50 p-3 text-sm text-red-800 mb-4">
           {error}
@@ -232,16 +266,23 @@ export default function UsersPage() {
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-500">{ago(u.lastLoginAt)}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {/* Both of these throw the person out of the app mid-call,
+                        and they sat three pixels apart with no confirmation.
+                        Reset was not even hidden on your own row. */}
                     <button
                       className="text-xs text-chip-700 hover:underline mr-3"
-                      onClick={() => patch(u.id, { resetPassword: true })}
+                      onClick={() => setConfirm({ id: u.id, name: u.name, kind: "reset" })}
                     >
                       Reset password
                     </button>
                     {u.id !== me && (
                       <button
                         className={"text-xs hover:underline " + (u.active ? "text-red-700" : "text-emerald-700")}
-                        onClick={() => patch(u.id, { active: !u.active })}
+                        onClick={() =>
+                          u.active
+                            ? setConfirm({ id: u.id, name: u.name, kind: "deactivate" })
+                            : patch(u.id, { active: true })
+                        }
                       >
                         {u.active ? "Deactivate" : "Reactivate"}
                       </button>

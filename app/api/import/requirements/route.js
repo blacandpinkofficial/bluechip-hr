@@ -219,6 +219,14 @@ async function commit(req, gate) {
 }
 
 function numOrNull(v) {
+  // Number(null) is 0, and Number("") is 0, and Number.isFinite(0) is true — so
+  // the obvious version turned every unreadable cell into a hard zero. The
+  // parser deliberately emits null for "As per market" and for blanks; a
+  // takeHomeMax of 0 then reads as a real ceiling of nothing, which makes the
+  // screening blocker below fire on every candidate and makes the call script
+  // announce that the client takes freshers. Null means unknown and must stay
+  // unknown. (The two sibling routes already guard this; this copy did not.)
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? Math.round(n) : null;
 }

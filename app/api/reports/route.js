@@ -10,6 +10,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
 import { funnel, weakestStage, daily } from "@/lib/stats";
+import { istDay } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,9 +25,12 @@ export async function GET(req) {
   // A recruiter sees themselves. A manager sees the desk, or one person.
   const focusId = deskWide ? (url.searchParams.get("user") || null) : gate.user.id;
 
-  const since = new Date();
-  since.setHours(0, 0, 0, 0);
-  since.setDate(since.getDate() - (days - 1));
+  // The IST day, from lib/day.js, not the box's local midnight. The server runs
+  // on UTC, so setHours(0,0,0,0) made the working day run 05:30 IST to 05:30
+  // IST — and this desk has night and US-shift roles. Calls logged at 2am IST
+  // were landing in the previous day's figures.
+  const today = istDay();
+  const since = new Date(today.getTime() - (days - 1) * 86400000);
 
   const userFilter = focusId ? { userId: focusId } : {};
 
@@ -114,8 +118,12 @@ export async function GET(req) {
     },
     // The old "Daily productivity" row, for today.
     today: (() => {
-      const start = new Date(); start.setHours(0, 0, 0, 0);
-      const inDay = (d) => d && new Date(d) >= start;
+      // Both ends. `>= start` alone counted every interview booked for the next
+      // fortnight as happening today — the interviews query has no upper bound
+      // — so "today's line-ups" reported twelve when three were in the diary.
+      const start = today;
+      const end = new Date(start.getTime() + 86400000);
+      const inDay = (d) => d && new Date(d) >= start && new Date(d) < end;
       const ivToday = interviews.filter((i) => inDay(i.scheduledAt));
       return {
         calls: calls.filter((c) => inDay(c.calledAt)).length,

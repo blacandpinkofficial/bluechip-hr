@@ -82,7 +82,7 @@ export default function PayrollPage() {
       subtitle="Salary pro-rated by hours worked, plus incentive on candidates who actually joined."
       actions={
         <div className="flex gap-2">
-          <select className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
+          <select aria-label="Month" className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
             {recentMonths(12).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
           </select>
           {data?.canLock && (

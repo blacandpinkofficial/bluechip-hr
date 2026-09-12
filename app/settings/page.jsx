@@ -18,18 +18,28 @@ export default function SettingsPage() {
   const [pwDone, setPwDone] = useState(false);
 
   const load = useCallback(async () => {
+    // `r.ok ? r.json() : null` swallowed every HTTP error, and the catch only
+    // fired on a network throw — so a 403 or a 500 left `settings` null and the
+    // screen said "Loading…" for the rest of the session with nothing to click.
     try {
       const [meRes, setRes] = await Promise.all([
-        fetch("/api/auth/me").then((r) => (r.ok ? r.json() : null)),
-        fetch("/api/settings").then((r) => (r.ok ? r.json() : null)),
+        fetch("/api/auth/me"),
+        fetch("/api/settings"),
       ]);
-      if (meRes) {
-        setMe(meRes.user);
-        setCanEdit((meRes.capabilities || []).includes("user.write"));
+      if (meRes.ok) {
+        const j = await meRes.json();
+        setMe(j.user);
+        setCanEdit((j.capabilities || []).includes("user.write"));
       }
-      if (setRes) setSettings(setRes.settings);
-    } catch {
-      setError("Could not load settings.");
+      if (!setRes.ok) {
+        const j = await setRes.json().catch(() => ({}));
+        throw new Error(j.error || `Settings could not be loaded (${setRes.status}).`);
+      }
+      setSettings((await setRes.json()).settings);
+      setError("");
+    } catch (e) {
+      setError(e.message || "Could not load settings.");
+      setSettings(null);
     }
   }, []);
 

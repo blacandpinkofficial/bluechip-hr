@@ -194,7 +194,15 @@ export default function InterviewsPage() {
                         Came
                       </button>
                       <button
-                        onClick={() => patch(i.id, { attended: i.attended === false ? null : false, outcome: "no-show" })}
+                        onClick={() =>
+                          // Clearing the mark must clear the outcome too. Sending
+                          // outcome:"no-show" on the way back out left the
+                          // interview with no attendance mark but still recorded
+                          // as a no-show, which then fed the show rate in Reports.
+                          i.attended === false
+                            ? patch(i.id, { attended: null, outcome: "pending" })
+                            : patch(i.id, { attended: false, outcome: "no-show" })
+                        }
                         className={
                           "px-2 py-1 text-xs rounded border transition " +
                           (i.attended === false

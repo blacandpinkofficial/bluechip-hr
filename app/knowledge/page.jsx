@@ -49,6 +49,7 @@ export default function KnowledgePage() {
   const [file, setFile] = useState(null);
   const [upload, setUpload] = useState({ title: "", kind: "process", tags: "" });
   const [openId, setOpenId] = useState(null);
+  const [archiving, setArchiving] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -306,11 +307,18 @@ export default function KnowledgePage() {
                       {d.pinned ? "Unpin" : "Pin"}
                     </button>
                     {canArchive && (
+                      // One click used to file a handover out of sight. The
+                      // handover somebody archived by accident is exactly the one
+                      // the next person needed.
                       <button
                         className="text-xs text-slate-400 hover:text-red-700 px-1"
-                        onClick={() => patch(d.id, { archived: true })}
+                        onClick={() =>
+                          archiving === d.id
+                            ? (setArchiving(null), patch(d.id, { archived: true }))
+                            : setArchiving(d.id)
+                        }
                       >
-                        Archive
+                        {archiving === d.id ? "Sure?" : "Archive"}
                       </button>
                     )}
                   </div>

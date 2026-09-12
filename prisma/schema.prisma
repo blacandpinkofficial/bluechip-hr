@@ -179,6 +179,13 @@ model Requirement {
   // Shown on the public careers page. Off by default: an opening is internal
   // until someone decides otherwise, because the public version carries the
   // client's name and pay range to anyone who looks.
+  // Two routes have always written this; the column was never here, so every
+  // attempt to create an opening — by hand or through the sheet import — threw
+  // "Unknown argument 'createdById'" and surfaced as a 500. Adding the column
+  // rather than deleting the writes: who opened a requirement is worth knowing,
+  // and Interview, SalaryStructure and Invoice already record it the same way.
+  createdById String?
+
   publishOnline Boolean @default(false)
 
   status   String   @default("open") // open | hold | filled | closed
@@ -375,6 +382,12 @@ model Placement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // One placement per candidate per opening. The POST handler checks for an
+  // existing row first, but check-then-create is not atomic: two clicks in
+  // flight together both see nothing and both insert, doubling the month's
+  // revenue and paying the incentive twice. The database is the only place
+  // this can actually be prevented.
+  @@unique([candidateId, requirementId])
   @@index([recruiterId, selectedOn])
   @@index([clientId, joinedOn])
   @@index([invoiceStatus])

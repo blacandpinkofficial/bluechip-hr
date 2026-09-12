@@ -142,12 +142,16 @@ export default async function Dashboard() {
       )}
 
       {can(user.role, "revenue.read") && (
-        <div className="card p-5 mt-6 border-dashed">
-          <div className="text-sm font-medium text-slate-600">
-            Placements and revenue appear here once Phase D lands.
-          </div>
-          <div className="text-xs text-slate-400 mt-1">
-            Only owners and managers ever see this panel.
+        <div className="card p-5 mt-6">
+          <div className="text-sm font-medium text-chip-900">Money</div>
+          <p className="text-xs text-slate-500 mt-1 mb-3">
+            Only owners and managers see this.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <a href="/placements" className="btn-ghost text-sm">Placements this month</a>
+            <a href="/invoices" className="btn-ghost text-sm">Invoices &amp; what is overdue</a>
+            <a href="/reports" className="btn-ghost text-sm">Desk performance</a>
+            <a href="/payroll" className="btn-ghost text-sm">Payroll</a>
           </div>
         </div>
       )}

@@ -34,6 +34,9 @@ export default function InvoicesPage() {
   const [picked, setPicked] = useState(new Set());
   const [payFor, setPayFor] = useState(null);
   const [payAmount, setPayAmount] = useState("");
+  // Writing an invoice off says the money is never coming. One click, next to
+  // the Save button, was too easy a way to say it.
+  const [confirmOff, setConfirmOff] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,9 +145,14 @@ export default function InvoicesPage() {
         </div>
       )}
 
+      {/* `!data` as well as `loading`. These screens set `data` only on success,
+          so a 500 or a dropped connection left it null while `loading` went
+          false — and the very next line dereferenced it, replacing the whole
+          page with a React render error. The error banner above is what should
+          be showing at that moment. */}
       {loading ? (
         <div className="card p-10 text-center text-slate-400">Loading…</div>
-      ) : (
+      ) : !data ? null : (
         <>
           {/* ── earned, never billed ───────────────────────────────────────── */}
           <div className="card p-5 mb-6">
@@ -246,9 +254,9 @@ export default function InvoicesPage() {
                               <div className="text-xs text-red-700">{row.daysLate} days late</div>
                             )}
                           </td>
-                          <td className="p-3 text-right tabular-nums">{paiseToString(inv.totalPaise)}</td>
+                          <td className="p-3 text-right tabular-nums">₹{paiseToString(inv.totalPaise)}</td>
                           <td className="p-3 text-right tabular-nums">
-                            {outstanding > 0 ? paiseToString(outstanding) : "—"}
+                            {outstanding > 0 ? `₹${paiseToString(outstanding)}` : "—"}
                           </td>
                           <td className="p-3">
                             <span className={"text-[11px] px-2 py-0.5 rounded border " + (STATUS_TONE[inv.status] || STATUS_TONE.draft)}>
@@ -281,13 +289,29 @@ export default function InvoicesPage() {
                                 </button>
                                 <button className="btn-ghost" onClick={() => setPayFor(null)}>Cancel</button>
                                 <button className="text-xs text-slate-400 hover:text-red-700 ml-auto"
-                                  onClick={() => patch({ id: inv.id, status: "written-off" })}>
+                                  onClick={() => setConfirmOff(confirmOff === inv.id ? null : inv.id)}>
                                   Write off
                                 </button>
                               </div>
-                              <p className="text-xs text-slate-500 mt-2">
-                                Part payments are fine — enter what actually arrived, and the balance stays outstanding.
-                              </p>
+                              {confirmOff === inv.id ? (
+                                <div className="mt-3 border-t border-slate-200 pt-3">
+                                  <div className="text-sm text-red-800">
+                                    Write off {inv.number}? That records {paiseToString(outstanding)} as money
+                                    you will never receive. It stays on the books and stops being chased.
+                                  </div>
+                                  <div className="flex gap-2 mt-2">
+                                    <button className="btn-primary" disabled={busy}
+                                      onClick={() => { setConfirmOff(null); patch({ id: inv.id, status: "written-off" }); }}>
+                                      Yes, write it off
+                                    </button>
+                                    <button className="btn-ghost" onClick={() => setConfirmOff(null)}>Keep chasing it</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-500 mt-2">
+                                  Part payments are fine — enter what actually arrived, and the balance stays outstanding.
+                                </p>
+                              )}
                             </td>
                           </tr>
                         )}

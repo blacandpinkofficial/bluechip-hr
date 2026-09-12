@@ -85,9 +85,14 @@ export default function RemindersPage() {
     >
       {error && <div role="alert" className="card border-red-200 bg-red-50 p-3 text-sm text-red-800 mb-4">{error}</div>}
 
+      {/* `!data` as well as `loading`. These screens set `data` only on success,
+          so a 500 or a dropped connection left it null while `loading` went
+          false — and the very next line dereferenced it, replacing the whole
+          page with a React render error. The error banner above is what should
+          be showing at that moment. */}
       {loading ? (
         <div className="card p-10 text-center text-slate-400">Loading…</div>
-      ) : nothing ? (
+      ) : !data ? null : nothing ? (
         <div className="card p-10 text-center">
           <div className="text-chip-900 font-medium">Nothing outstanding.</div>
           <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">

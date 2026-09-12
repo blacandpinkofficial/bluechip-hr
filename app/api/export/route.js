@@ -14,6 +14,7 @@ import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
 import { describeFee, resolveFee } from "@/lib/fees";
+import { istDateString, timeLabel } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -118,8 +119,11 @@ export async function GET(req) {
     })));
 
     add("Interview Schedules", interviews.map((i) => ({
-      "Interview date": d(i.scheduledAt),
-      "Time": i.scheduledAt ? new Date(i.scheduledAt).toISOString().slice(11, 16) : "",
+      // IST, like the screen. toISOString() is UTC, so a 10:00 am interview
+      // exported as 04:30 and a 2am one landed on the previous date — the
+      // workbook and the app disagreed about every single row.
+      "Interview date": istDateString(i.scheduledAt),
+      "Time": i.scheduledAt ? timeLabel(i.scheduledAt) : "",
       "Candidate name": i.candidate?.name || "",
       "Ph number": i.candidate?.phone || "",
       "Company name": i.requirement?.client?.name || "",
@@ -150,9 +154,15 @@ export async function GET(req) {
       "CTC offered": p.ctcOfferedAnnual ?? "",
       ...(showMoney ? {
         "Revenue": p.revenue ?? "",
-        "Fee basis": p.feeType === "percent" ? `${(p.feeBps / 100).toFixed(2).replace(/\.00$/, "")}%` : "Flat",
         "Invoice": p.invoiceStatus,
         "Invoice no": p.invoiceNo || "",
+      } : {}),
+      // Fee basis is the client's agreed RATE, not a revenue figure, so it
+      // belongs behind client.fees (owner only) like the two commercial columns
+      // on the other sheets — not behind showMoney, which managers also hold.
+      // An export must not be a way around a permission that holds on screen.
+      ...(showFees ? {
+        "Fee basis": p.feeType === "percent" ? `${(p.feeBps / 100).toFixed(2).replace(/\.00$/, "")}%` : "Flat",
       } : {}),
       "Replacement until": d(p.replacementUntil),
       "Dropped on": d(p.droppedOn),

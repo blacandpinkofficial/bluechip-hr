@@ -111,6 +111,20 @@ export async function GET(req, { params }) {
   const gate = await requireCapability("candidate.read");
   if (!gate.ok) return gate.response;
 
+  // The POST handler in this file checks ownership; this GET did not, so any
+  // candidate id returned the last fifty calls on a colleague's candidate —
+  // including the free-text notes of what was actually said on the phone.
+  // Candidate ids are easy to come by: the duplicate-phone response on
+  // POST /api/candidates hands one over for any number.
+  const owner = await prisma.candidate.findUnique({
+    where: { id: params?.id },
+    select: { ownerId: true },
+  });
+  if (!owner) return NextResponse.json({ error: "No such candidate." }, { status: 404 });
+  if (owner.ownerId && owner.ownerId !== gate.user.id && !can(gate.user.role, "report.desk")) {
+    return NextResponse.json({ error: "That candidate belongs to someone else on the desk." }, { status: 403 });
+  }
+
   const calls = await prisma.candidateCall.findMany({
     where: { candidateId: params?.id },
     orderBy: { calledAt: "desc" },

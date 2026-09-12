@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { waMeLink, waWebLink, telLink, jobMessage, followUpMessage } from "@/lib/whatsapp";
+import CandidateActions from "@/components/CandidateActions";
 
 const QUEUES = [
   { key: "due", label: "Callbacks due" },
@@ -46,9 +47,19 @@ function months(m) {
   const y = Math.floor(m / 12), r = m % 12;
   return r ? `${y}y ${r}m` : `${y}y`;
 }
+// Matches the short form used on Requirements, Placements and Reports. Without
+// the lakh branch this screen showed "₹150k" for the figure every other screen
+// rendered as "₹1.5L" — the same number, two scales, one desk.
 function money(n) {
   if (n == null) return "—";
-  return n >= 1000 ? `₹${Math.round(n / 1000)}k` : `₹${n}`;
+  const v = Math.round(n);
+  if (Math.abs(v) >= 10000000) return `₹${trim(v / 10000000)}Cr`;
+  if (Math.abs(v) >= 100000) return `₹${trim(v / 100000)}L`;
+  if (Math.abs(v) >= 1000) return `₹${trim(v / 1000)}k`;
+  return `₹${v}`;
+}
+function trim(x) {
+  return (Math.round(x * 10) / 10).toString().replace(/\.0$/, "");
 }
 function ago(d) {
   if (!d) return "never";
@@ -90,6 +101,21 @@ export default function CandidatesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState(null);
+
+  // The reminders screen links here as /candidates?open=<id>. Nothing read it,
+  // so clicking "Open" on an overdue callback landed on the default queue with
+  // the person nowhere in sight and no hint as to why. Read from
+  // window.location in an effect rather than useSearchParams, because
+  // useSearchParams forces the whole route into dynamic rendering and has
+  // already broken this build once.
+  useEffect(() => {
+    const want = new URLSearchParams(window.location.search).get("open");
+    if (!want) return;
+    setOpenId(want);
+    // "all" so the person is found even when they are not in today's due queue,
+    // which is the usual case for a callback that slipped.
+    setQueue("all");
+  }, []);
   const [busy, setBusy] = useState(false);
   const [notes, setNotes] = useState("");
   const [callbackAt, setCallbackAt] = useState("");
@@ -572,6 +598,15 @@ export default function CandidatesPage() {
                         />
                       </div>
                     </div>
+
+                    {/* What happens AFTER the call. Until this existed, a
+                        recruiter could log a call and nothing else — the
+                        interviews, submissions and placements screens had no way
+                        of ever being filled. */}
+                    <CandidateActions
+                      candidate={c}
+                      onDone={() => { setLogged((n) => n + 1); load(); }}
+                    />
 
                     {/* Every remark, oldest at the bottom. This is what a
                         recruiter reads before dialling, and what makes a

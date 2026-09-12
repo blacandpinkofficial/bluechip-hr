@@ -97,6 +97,17 @@ export async function POST(req) {
   if (!candidate) return NextResponse.json({ error: "That candidate does not exist." }, { status: 404 });
   if (!requirement) return NextResponse.json({ error: "That opening does not exist." }, { status: 404 });
 
+  // Without this, a recruiter could post any candidate id and have that
+  // person's CV emailed to an address of their choosing — the entire candidate
+  // database, one id at a time. PATCH below already checked ownership; POST,
+  // which is the one that actually sends the file, did not.
+  if (candidate.ownerId && candidate.ownerId !== user.id && !can(user.role, "report.desk")) {
+    return NextResponse.json(
+      { error: "That candidate belongs to someone else on the desk." },
+      { status: 403 }
+    );
+  }
+
   // Sending the same CV to the same opening twice makes the desk look
   // disorganised to the client and wastes the candidate's goodwill. Warned
   // rather than blocked — a genuine resubmission after two months is normal.
@@ -116,7 +127,13 @@ export async function POST(req) {
   }
 
   const method = ["email", "whatsapp", "portal", "in-person"].includes(b.method) ? b.method : "email";
-  const toEmail = String(b.toEmail || requirement.client?.hrEmail || "").trim() || null;
+
+  // The destination is the CLIENT's address on file, never one supplied with
+  // the request. A caller-chosen address turns "send this CV to the client"
+  // into "send this CV anywhere", and the attachment is a real person's
+  // private document. Changing where a client's CVs go is a deliberate edit on
+  // the client record, which is owner/manager only.
+  const toEmail = String(requirement.client?.hrEmail || "").trim() || null;
 
   const settings = await getSettings();
   const mail = submissionEmail({

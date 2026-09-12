@@ -26,7 +26,14 @@ export default function SubmissionsPage() {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Cleared on a timer. Without one the green "Saved." banner stayed on screen
+  // for the rest of the session, so it stopped meaning anything.
   const [flash, setFlash] = useState("");
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(""), 2500);
+    return () => clearTimeout(t);
+  }, [flash]);
   const [editing, setEditing] = useState(null);
 
   const load = useCallback(async () => {
@@ -68,7 +75,7 @@ export default function SubmissionsPage() {
       title="Submissions"
       subtitle="Every CV sent to a client, with the date it went and whether they ever replied."
       actions={
-        <select className="input max-w-[13rem]" value={filter} onChange={(e) => setFilter(e.target.value)}>
+        <select aria-label="Filter by status" className="input max-w-[13rem]" value={filter} onChange={(e) => setFilter(e.target.value)}>
           <option value="">All</option>
           {(data?.statuses || []).map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -91,9 +98,14 @@ export default function SubmissionsPage() {
         </div>
       )}
 
+      {/* `!data` as well as `loading`. These screens set `data` only on success,
+          so a 500 or a dropped connection left it null while `loading` went
+          false — and the very next line dereferenced it, replacing the whole
+          page with a React render error. The error banner above is what should
+          be showing at that moment. */}
       {loading ? (
         <div className="card p-10 text-center text-slate-400">Loading…</div>
-      ) : data.submissions.length === 0 ? (
+      ) : !data ? null : data.submissions.length === 0 ? (
         <div className="card p-10 text-center">
           <div className="text-chip-900 font-medium">Nothing sent yet.</div>
           <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">

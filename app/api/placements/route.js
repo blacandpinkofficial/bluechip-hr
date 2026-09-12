@@ -13,19 +13,23 @@ import { requireCapability, can, ownScope } from "@/lib/auth";
 import { freezeTerms, resolveFee, replacementDeadline } from "@/lib/fees";
 import { parseRupees } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
+import { istMonth, monthRange as istMonthRange } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// One definition of a month, shared with payroll and invoicing. This file used
+// to build its own from the server's LOCAL calendar: on a UTC box, for the first
+// five and a half hours of every month, "this month" still resolved to the last
+// one — and the screen showed September's figures under an October heading.
 function monthRange(ym) {
-  // ym is "2026-09". Defaults to the current month.
-  const now = new Date();
-  let y = now.getFullYear(), m = now.getMonth();
-  if (/^\d{4}-\d{2}$/.test(ym || "")) {
-    const [yy, mm] = ym.split("-").map(Number);
-    if (mm >= 1 && mm <= 12) { y = yy; m = mm - 1; }
+  const label = /^\d{4}-\d{2}$/.test(ym || "") ? ym : istMonth();
+  const range = istMonthRange(label);
+  if (!range) {
+    const fallback = istMonth();
+    return { ...istMonthRange(fallback), label: fallback };
   }
-  return { from: new Date(y, m, 1), to: new Date(y, m + 1, 1), label: `${y}-${String(m + 1).padStart(2, "0")}` };
+  return { ...range, label };
 }
 
 export async function GET(req) {
@@ -35,6 +39,11 @@ export async function GET(req) {
   const url = new URL(req.url);
   const { from, to, label } = monthRange(url.searchParams.get("month"));
   const deskWide = can(gate.user.role, "revenue.read");
+  // The frozen fee terms ARE the client's commercial rate — freezeTerms copies
+  // them straight off the client or the requirement. client.fees is owner-only,
+  // and /api/clients and /api/requirements both strip these correctly; this
+  // route was handing every manager the agreed rate for every client.
+  const showFees = can(gate.user.role, "client.fees");
 
   const rows = await prisma.placement.findMany({
     where: {
@@ -85,9 +94,7 @@ export async function GET(req) {
       employeeId: p.employeeId,
       ctcOfferedAnnual: p.ctcOfferedAnnual,
       takeHomeMonthly: p.takeHomeMonthly,
-      feeType: p.feeType,
-      feeBps: p.feeBps,
-      feeFlat: p.feeFlat,
+      ...(showFees ? { feeType: p.feeType, feeBps: p.feeBps, feeFlat: p.feeFlat } : {}),
       revenue: p.revenue,
       invoiceStatus: p.invoiceStatus,
       invoiceNo: p.invoiceNo,
@@ -224,6 +231,16 @@ export async function POST(req) {
 
     return NextResponse.json({ placement: created }, { status: 201 });
   } catch (e) {
+    // P2002 is the new unique constraint on (candidateId, requirementId) doing
+    // its job: two clicks raced past the findFirst check above. That is not a
+    // server fault and must not read like one — the second click simply lost,
+    // which is exactly what should happen.
+    if (e?.code === "P2002") {
+      return NextResponse.json(
+        { error: "That placement has already been recorded." },
+        { status: 409 }
+      );
+    }
     console.error("[POST /api/placements]", e?.message || e);
     return NextResponse.json({ error: "Could not record the placement." }, { status: 500 });
   }

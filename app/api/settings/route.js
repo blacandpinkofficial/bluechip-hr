@@ -1,17 +1,21 @@
 // /api/settings — the few numbers that are policy rather than data.
 import { NextResponse } from "next/server";
-import { requireCapability } from "@/lib/auth";
-import { getSettings, updateSettings, publicSettings } from "@/lib/settings";
+import { requireCapability, can } from "@/lib/auth";
+import { getSettings, updateSettings, publicSettings, settingsForRole } from "@/lib/settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  // Everyone signed in may read these — the replacement window is something a
-  // recruiter needs to know when a client asks on the phone.
+  // Everyone signed in may read the policy numbers — the replacement window is
+  // something a recruiter needs when a client asks on the phone. But the same
+  // row also holds the company bank account, the GSTIN and the SMTP username,
+  // and those are not for a screen anyone can open, so the payload is narrowed
+  // by role rather than sent whole.
   const gate = await requireCapability("client.read");
   if (!gate.ok) return gate.response;
-  return NextResponse.json({ settings: publicSettings(await getSettings()) });
+  const canSeeAll = can(gate.user.role, "user.write");
+  return NextResponse.json({ settings: settingsForRole(await getSettings(), canSeeAll) });
 }
 
 export async function PATCH(req) {

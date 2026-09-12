@@ -110,7 +110,7 @@ export default function AttendancePage() {
       title="Attendance"
       subtitle="One tap in, one tap out. Hours worked are what pay is calculated from."
       actions={
-        <select className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
+        <select aria-label="Month" className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
           {recentMonths(12).map((m) => (
             <option key={m} value={m}>{monthLabel(m)}</option>
           ))}

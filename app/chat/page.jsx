@@ -90,7 +90,11 @@ export default function ChatPage() {
     <Shell title="Chat" subtitle="Quick messages between the desk, kept with the company rather than on a personal phone.">
       {error && <div role="alert" className="card border-red-200 bg-red-50 p-3 text-sm text-red-800 mb-4">{error}</div>}
 
-      <div className="grid md:grid-cols-[14rem,1fr] gap-4">
+      {/* Underscore, not comma. Tailwind emits arbitrary values verbatim, so
+          `[14rem,1fr]` produced `grid-template-columns: 14rem,1fr`, which is
+          invalid CSS and silently dropped — the people list stacked on top of
+          the conversation on every desktop. */}
+      <div className="grid md:grid-cols-[14rem_1fr] gap-4">
         <div className="card p-2 h-fit">
           <ChannelButton
             active={peer === "desk"}
