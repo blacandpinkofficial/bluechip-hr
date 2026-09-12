@@ -10,12 +10,15 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const NAV = [
-  { href: "/dashboard",    label: "Today",        cap: null },
+  { href: "/dashboard",    label: "Dashboard",    cap: null },
+  { href: "/reminders",    label: "Today",        cap: "candidate.read" },
   { href: "/candidates",   label: "Calls",        cap: "candidate.read" },
   { href: "/interviews",   label: "Interviews",   cap: "interview.read" },
   { href: "/requirements", label: "Requirements", cap: "requirement.read" },
   { href: "/clients",      label: "Clients",      cap: "client.read" },
+  { href: "/submissions",  label: "Submissions",  cap: "candidate.read" },
   { href: "/placements",   label: "Placements",   cap: "report.own" },
+  { href: "/invoices",     label: "Invoices",     cap: "revenue.read" },
   { href: "/reports",      label: "Reports",      cap: "report.own" },
   { href: "/knowledge",    label: "Knowledge",    cap: "candidate.read" },
   { href: "/attendance",   label: "Attendance",   cap: "attendance.own" },

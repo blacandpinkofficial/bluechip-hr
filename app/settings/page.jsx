@@ -236,9 +236,10 @@ export default function SettingsPage() {
           <div className="card p-5">
             <div className="font-medium text-chip-900">AI connection</div>
             <p className="text-sm text-slate-500 mt-1 mb-4">
-              Somewhere to put a provider key for later. To be plain about it:{" "}
-              <b>nothing in the app uses this yet</b> — it is the socket, not the appliance.
-              The key is stored on the server and never sent back to a browser.
+              Used to sharpen the call scripts on the candidate screen. With no key the
+              scripts still work — they are built from the requirement and the candidate
+              either way; the key only makes the wording less mechanical. The key is
+              stored on the server and never sent back to a browser.
             </p>
 
             <label className="flex items-start gap-3 cursor-pointer mb-4">
@@ -279,6 +280,154 @@ export default function SettingsPage() {
             <p className="text-xs text-slate-500 mt-2">
               Clearing the field removes the stored key. Leaving the dots untouched keeps it —
               saving another field on this page will not overwrite it.
+            </p>
+          </div>
+        )}
+
+        {/* Invoicing identity */}
+        {canEdit && settings && (
+          <div className="card p-5">
+            <div className="font-medium text-chip-900">Invoicing</div>
+            <p className="text-sm text-slate-500 mt-1 mb-4">
+              What appears at the top of every invoice. An invoice without a GSTIN and an
+              address is not a tax invoice, and a client&rsquo;s accounts department will send
+              it back — so invoices cannot be raised until these are filled in.
+            </p>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="s-gstin" className="label">Your GSTIN</label>
+                <input id="s-gstin" className="input" defaultValue={settings.gstin || ""}
+                  placeholder="33AAACA1234A1Z5"
+                  onBlur={(e) => e.target.value !== (settings.gstin || "") && saveSettings({ gstin: e.target.value })} />
+                <p className="text-xs text-slate-500 mt-1">
+                  The first two digits are your state code, and they decide whether an
+                  invoice carries CGST+SGST or IGST. Taken from here automatically.
+                </p>
+              </div>
+              <div>
+                <label htmlFor="s-state" className="label">State</label>
+                <input id="s-state" className="input" defaultValue={settings.stateName || ""}
+                  placeholder="Tamil Nadu"
+                  onBlur={(e) => e.target.value !== (settings.stateName || "") && saveSettings({ stateName: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label htmlFor="s-addr" className="label">Registered address</label>
+              <textarea id="s-addr" className="input h-20" defaultValue={settings.addressLine || ""}
+                placeholder={"2nd Floor, ...\nChennai 600040"}
+                onBlur={(e) => e.target.value !== (settings.addressLine || "") && saveSettings({ addressLine: e.target.value })} />
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-3 mt-3">
+              <div>
+                <label htmlFor="s-prefix" className="label">Invoice prefix</label>
+                <input id="s-prefix" className="input" defaultValue={settings.invoicePrefix || "BCH"}
+                  onBlur={(e) => e.target.value !== (settings.invoicePrefix || "") && saveSettings({ invoicePrefix: e.target.value })} />
+                <p className="text-xs text-slate-500 mt-1">BCH/2026-27/001</p>
+              </div>
+              <div>
+                <label htmlFor="s-gst" className="label">GST rate</label>
+                <select id="s-gst" className="input" defaultValue={String(settings.gstBps ?? 1800)}
+                  onChange={(e) => saveSettings({ gstBps: Number(e.target.value) })}>
+                  <option value="1800">18% — recruitment services</option>
+                  <option value="1200">12%</option>
+                  <option value="500">5%</option>
+                  <option value="0">Not registered / exempt</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-3 mt-3">
+              <div>
+                <label htmlFor="s-bank" className="label">Bank</label>
+                <input id="s-bank" className="input" defaultValue={settings.bankName || ""}
+                  onBlur={(e) => e.target.value !== (settings.bankName || "") && saveSettings({ bankName: e.target.value })} />
+              </div>
+              <div>
+                <label htmlFor="s-acct" className="label">Account number</label>
+                <input id="s-acct" className="input" defaultValue={settings.bankAccount || ""}
+                  onBlur={(e) => e.target.value !== (settings.bankAccount || "") && saveSettings({ bankAccount: e.target.value })} />
+              </div>
+              <div>
+                <label htmlFor="s-ifsc" className="label">IFSC</label>
+                <input id="s-ifsc" className="input" defaultValue={settings.bankIfsc || ""}
+                  onBlur={(e) => e.target.value !== (settings.bankIfsc || "") && saveSettings({ bankIfsc: e.target.value })} />
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">
+              Invoice numbers run in one unbroken series per financial year (April to March)
+              and restart at 001 each April. Gaps in the series get questioned, so nothing
+              in the app deletes an invoice — cancelling one keeps its number.
+            </p>
+          </div>
+        )}
+
+        {/* Email */}
+        {canEdit && settings && (
+          <div className="card p-5">
+            <div className="font-medium text-chip-900">Email</div>
+            <p className="text-sm text-slate-500 mt-1 mb-4">
+              Lets the desk send a CV to a client from inside the app, so there is a record
+              of what went where and when. Without this, submissions can still be recorded
+              by hand — the record is the part that matters.
+            </p>
+
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label htmlFor="s-smtph" className="label">SMTP server</label>
+                <input id="s-smtph" className="input" defaultValue={settings.smtpHost || ""}
+                  placeholder="smtp.gmail.com"
+                  onBlur={(e) => e.target.value !== (settings.smtpHost || "") && saveSettings({ smtpHost: e.target.value })} />
+              </div>
+              <div>
+                <label htmlFor="s-smtpp" className="label">Port</label>
+                <input id="s-smtpp" className="input" inputMode="numeric" defaultValue={settings.smtpPort ?? ""}
+                  placeholder="465"
+                  onBlur={(e) => String(e.target.value) !== String(settings.smtpPort ?? "") && saveSettings({ smtpPort: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3 mt-3">
+              <div>
+                <label htmlFor="s-smtpu" className="label">Username</label>
+                <input id="s-smtpu" className="input" autoComplete="off" defaultValue={settings.smtpUser || ""}
+                  onBlur={(e) => e.target.value !== (settings.smtpUser || "") && saveSettings({ smtpUser: e.target.value })} />
+              </div>
+              <div>
+                <label htmlFor="s-smtppw" className="label">
+                  Password {settings.smtpPasswordSet && <span className="text-emerald-700">· one is stored</span>}
+                </label>
+                <input id="s-smtppw" type="password" className="input" autoComplete="new-password"
+                  defaultValue={settings.smtpPassword || ""}
+                  placeholder={settings.smtpPasswordSet ? "A password is saved" : ""}
+                  onBlur={(e) => e.target.value !== (settings.smtpPassword || "") && saveSettings({ smtpPassword: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3 mt-3">
+              <div>
+                <label htmlFor="s-smtpf" className="label">Send from</label>
+                <input id="s-smtpf" className="input" defaultValue={settings.smtpFrom || ""}
+                  placeholder="Blue Chip HR &lt;hr@bluechiphr.com&gt;"
+                  onBlur={(e) => e.target.value !== (settings.smtpFrom || "") && saveSettings({ smtpFrom: e.target.value })} />
+              </div>
+              <label className="flex items-start gap-3 cursor-pointer pt-6">
+                <input id="s-smtpsec" type="checkbox" className="mt-1 h-4 w-4 accent-chip-600"
+                  defaultChecked={settings.smtpSecure}
+                  onChange={(e) => saveSettings({ smtpSecure: e.target.checked })} />
+                <span className="text-sm">
+                  <span className="font-medium text-chip-900">Secure connection</span>
+                  <span className="block text-slate-500">On for port 465, off for 587.</span>
+                </span>
+              </label>
+            </div>
+
+            <p className="text-xs text-slate-500 mt-3">
+              If this is a Gmail or Google Workspace address it needs an <b>app password</b>,
+              not the account password — Google rejects the account password from other
+              programs. The password is stored on the server and never sent back to a browser.
             </p>
           </div>
         )}

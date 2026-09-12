@@ -14,7 +14,12 @@ import { NextResponse } from "next/server";
 // endpoints are here deliberately; they enforce their own rules (the page can
 // be switched off, and the apply route is rate limited) rather than relying on
 // a session that a candidate will never have.
-const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/jobs", "/api/public"];
+// /api/cron is here because the nightly job authenticates with a shared secret
+// header, not a session cookie. Without this entry the edge middleware 401s the
+// timer before the handler runs, and the timer's log says "401" — which reads
+// as a wrong secret, not a routing rule. The handler checks the secret itself,
+// in constant time; this line only gets the request as far as the handler.
+const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/jobs", "/api/public", "/api/cron"];
 
 export function middleware(req) {
   const { pathname } = req.nextUrl;

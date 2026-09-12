@@ -2,7 +2,7 @@
   "name": "bluechip-hr",
   "version": "0.1.0",
   "private": true,
-  "description": "Blue Chip HR Solutions — recruitment operations",
+  "description": "Blue Chip HR Solutions \u2014 recruitment operations",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -15,10 +15,11 @@
   "dependencies": {
     "@prisma/client": "5.22.0",
     "bcryptjs": "2.4.3",
-    "next": "14.2.15",
+    "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "xlsx": "0.18.5"
+    "xlsx": "0.18.5",
+    "nodemailer": "6.9.15"
   },
   "devDependencies": {
     "autoprefixer": "10.4.20",

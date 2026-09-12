@@ -96,6 +96,16 @@ async function computeMonth(month, range) {
   });
 }
 
+/** Strip revenue from the achiever block for anyone who may not see it. */
+function hideRevenue(ach, seesDesk) {
+  if (!ach || seesDesk) return ach;
+  return {
+    ...ach,
+    revenue: null,
+    runnerUp: ach.runnerUp ? { ...ach.runnerUp, revenue: null } : null,
+  };
+}
+
 function safeSlabs(json) {
   try {
     const v = JSON.parse(json || "[]");
@@ -164,14 +174,24 @@ export async function GET(req) {
     lockedAt: run?.lockedAt || null,
     paidOn: run?.paidOn || null,
     rows: visible,
-    // The achiever board is desk-wide by design — it is meant to be seen. But
-    // it carries joinings and revenue, not pay, so a recruiter seeing it does
-    // not learn anyone's salary.
-    achiever: achiever(rows.map((r) => ({ userId: r.userId, name: r.name, joinings: r.joinings, revenue: r.revenue }))),
+    // The achiever board is desk-wide on purpose — it is meant to be seen, and
+    // it is ranked on JOININGS, which is the achievement.
+    //
+    // Revenue per named colleague is a different thing, and it was leaking:
+    // this board is served to everyone, so a recruiter could read every
+    // colleague's monthly billing out of it — precisely the desk-wide revenue
+    // that revenue.read exists to keep to owners and managers. Ranking still
+    // uses revenue to break ties server-side; the figure is only sent to
+    // someone entitled to see it.
+    achiever: hideRevenue(
+      achiever(rows.map((r) => ({ userId: r.userId, name: r.name, joinings: r.joinings, revenue: r.revenue }))),
+      seesDesk
+    ),
     board: rows
       .map((r) => ({ userId: r.userId, name: r.name, joinings: r.joinings, revenue: r.revenue }))
       .filter((r) => r.joinings > 0 || r.revenue > 0)
-      .sort((a, b) => b.joinings - a.joinings || b.revenue - a.revenue),
+      .sort((a, b) => b.joinings - a.joinings || b.revenue - a.revenue)
+      .map((r) => (seesDesk || r.userId === user.id ? r : { ...r, revenue: null })),
     totals: seesDesk
       ? {
           people: visible.length,
