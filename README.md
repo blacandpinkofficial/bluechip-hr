@@ -15,29 +15,26 @@ instead. The absence of shared code is the feature.
 
 ## First-time setup on the server
 
-Run these in order, as `ubuntu`, on the Lightsail box.
+As `ubuntu`, on the Lightsail box. Two pastes.
 
 ```bash
-# 1. Provision — database, role, service, nginx. Safe to run twice.
-#    Verifies Pulse still works and rolls itself back if it doesn't.
-bash deploy/provision-bluechip.sh
+# 1. The code. CLONE BEFORE PROVISIONING — provisioning writes .env into
+#    /opt/bluechip/app, and `git clone` refuses a directory that is not empty.
+sudo mkdir -p /opt/bluechip && sudo chown -R ubuntu:ubuntu /opt/bluechip
+git clone https://github.com/blacandpinkofficial/bluechip-hr.git /opt/bluechip/app
+```
 
-# 2. DNS: point app.bluechiphr.com at this box, then
+```bash
+# 2. Everything else: database, role, systemd, nginx, dependencies, schema,
+#    build, start, health check, first owner account. Safe to run again.
+bash /opt/bluechip/app/deploy/bootstrap.sh
+```
+
+DNS and the certificate can wait until the app is up:
+
+```bash
+# point app.bluechiphr.com at this box's IP first, then
 sudo certbot --nginx -d app.bluechiphr.com
-
-# 3. Code
-git clone <repo-url> /opt/bluechip/app     # provision created the directory
-cd /opt/bluechip/app
-npm install
-npx prisma db push
-npm run build
-
-# 4. The first account
-node scripts/seed-owner.mjs "Your Brother's Name" him@bluechiphr.com
-
-# 5. Start
-sudo systemctl start bluechip
-curl -s localhost:3100/api/health
 ```
 
 ## Deploying afterwards
