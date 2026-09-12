@@ -2,15 +2,42 @@
 // The login screen. It is the whole of the brand promise that this is a
 // separate company, so it carries Blue Chip's name and nothing else — no Pulse,
 // no Blac & Pink, no shared styling.
+//
+// Two notes on how the redirect target is handled:
+//
+// 1. It is read with window.location inside the submit handler, NOT with
+//    useSearchParams(). That hook forces the whole page out of static rendering
+//    unless it sits inside a <Suspense> boundary, and without one the
+//    production build fails outright at "Generating static pages". Since the
+//    value is only needed at the moment of submit, reading it there is simpler
+//    than wrapping the page in Suspense to satisfy a hook we barely use.
+//
+// 2. It is validated before being followed. "?next=" comes from the URL, which
+//    means anyone can put anything in it — including https://evil.example. A
+//    link like that would show a genuine Blue Chip login page and then hand the
+//    user to someone else's site the instant they signed in. Only same-site
+//    paths are accepted.
 
 import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+
+const DEFAULT_NEXT = "/dashboard";
+
+function safeNext() {
+  try {
+    const raw = new URLSearchParams(window.location.search).get("next");
+    if (!raw) return DEFAULT_NEXT;
+    // Must be a path on this site: one leading slash, and not "//host" or
+    // "/\host", both of which browsers treat as protocol-relative URLs to
+    // somewhere else entirely.
+    if (!raw.startsWith("/")) return DEFAULT_NEXT;
+    if (raw.startsWith("//") || raw.startsWith("/\\")) return DEFAULT_NEXT;
+    return raw;
+  } catch {
+    return DEFAULT_NEXT;
+  }
+}
 
 export default function LoginPage() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const next = params.get("next") || "/dashboard";
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -33,9 +60,9 @@ export default function LoginPage() {
         setBusy(false);
         return;
       }
-      // Full navigation, not router.push — the session cookie was just set and
-      // the server components need to see it on a fresh request.
-      window.location.href = next;
+      // A full navigation, not router.push — the session cookie was just set
+      // and the server components need to see it on a fresh request.
+      window.location.href = safeNext();
     } catch {
       setError("Network problem. Check your connection and try again.");
       setBusy(false);
