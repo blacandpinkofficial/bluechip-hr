@@ -236,7 +236,10 @@ export default function UsersPage() {
                 }>
                   <td className="px-4 py-3">
                     <div className="font-medium text-chip-900">
-                      {u.name}{u.id === me && <span className="text-xs text-slate-400 font-normal"> — you</span>}
+                      {/* Through to their desk — what they closed, what is live,
+                          and where in the funnel they are losing people. */}
+                      <a href={`/people/${u.id}`} className="hover:underline">{u.name}</a>
+                      {u.id === me && <span className="text-xs text-slate-400 font-normal"> — you</span>}
                     </div>
                     <div className="text-xs text-slate-500">{u.email}</div>
                     {!u.active && <div className="text-xs text-red-700 mt-0.5">Deactivated</div>}

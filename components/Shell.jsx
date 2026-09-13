@@ -45,6 +45,7 @@ const GROUPS = [
     items: [
       { href: "/invoices",     label: "Invoices",     cap: "revenue.read" },
       { href: "/payroll",      label: "Payroll",      cap: "payroll.own" },
+      { href: "/payroll/setup", label: "Pay setup",   cap: "salary.write" },
       { href: "/attendance",   label: "Attendance",   cap: "attendance.own" },
     ],
   },
@@ -55,12 +56,29 @@ const GROUPS = [
       { href: "/dashboard",    label: "Dashboard",    cap: null },
       { href: "/reports",      label: "Reports",      cap: "report.own" },
       { href: "/knowledge",    label: "Knowledge",    cap: "candidate.read" },
+      { href: "/training",     label: "Practice",     cap: "training.use" },
       { href: "/chat",         label: "Chat",         cap: "chat.use" },
       { href: "/users",        label: "Team",         cap: "user.read" },
       { href: "/settings",     label: "Settings",     cap: null },
     ],
   },
 ];
+
+/**
+ * Is this nav entry the one the current page belongs to?
+ *
+ * The prefix test alone lit up BOTH "Payroll" and "Pay setup" on /payroll/setup,
+ * because /payroll is a prefix of it. So a prefix match only counts when no
+ * other entry in the group is a longer, better match for the same path.
+ */
+function isOn(pathname, href, siblings = []) {
+  if (pathname === href) return true;
+  if (!pathname.startsWith(href + "/")) return false;
+  return !siblings.some(
+    (s) => s.href !== href && s.href.length > href.length &&
+      (pathname === s.href || pathname.startsWith(s.href + "/"))
+  );
+}
 
 export default function Shell({ children, title, subtitle, actions }) {
   const pathname = usePathname();
@@ -130,9 +148,7 @@ export default function Shell({ children, title, subtitle, actions }) {
                   </Link>
                 );
               }
-              const active = g.items.some(
-                (n) => pathname === n.href || pathname.startsWith(n.href + "/")
-              );
+              const active = g.items.some((n) => isOn(pathname, n.href, g.items));
               const open = openGroup === g.label;
               return (
                 <div key={g.label} className="relative">
@@ -162,7 +178,7 @@ export default function Shell({ children, title, subtitle, actions }) {
                       />
                       <div className="absolute left-0 top-full z-20 mt-px min-w-[12rem] rounded-b border border-slate-200 bg-white shadow-lg py-1">
                         {g.items.map((n) => {
-                          const here = pathname === n.href || pathname.startsWith(n.href + "/");
+                          const here = isOn(pathname, n.href, g.items);
                           return (
                             <Link
                               key={n.href}

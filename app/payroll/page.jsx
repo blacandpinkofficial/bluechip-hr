@@ -230,9 +230,16 @@ export default function PayrollPage() {
                       {data.board.map((b, i) => (
                         <tr key={b.userId} className="border-t border-slate-100">
                           <td className="py-2 w-8 text-slate-400">{i + 1}</td>
-                          <td className="py-2">{b.name}</td>
+                          <td className="py-2">
+                            <a href={`/people/${b.userId}`} className="hover:underline">{b.name}</a>
+                          </td>
                           <td className="py-2 text-right tabular-nums">{b.joinings}</td>
-                          <td className="py-2 text-right tabular-nums text-slate-500">{inr(b.revenue)}</td>
+                          {/* null when the viewer may not see desk revenue — the
+                              board is about joinings, and a recruiter reading a
+                              colleague's billing out of it was a real leak. */}
+                          <td className="py-2 text-right tabular-nums text-slate-500">
+                            {b.revenue == null ? "" : inr(b.revenue)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

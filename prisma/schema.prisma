@@ -58,6 +58,7 @@ model User {
   chatReceived     ChatMessage[]     @relation("ChatRecipient")
   reminders        Reminder[]
   submissions      Submission[]
+  training         TrainingSession[]
 
   @@index([active, role])
 }
@@ -804,4 +805,30 @@ model InvoiceLine {
 
   @@index([invoiceId])
   @@index([placementId])
+}
+
+// A practice call. The transcript is kept so a manager can read what was
+// actually said, and so a trainee can see their own earlier attempts — improving
+// is much easier to believe when you can read the call you made last week.
+model TrainingSession {
+  id         String  @id @default(cuid())
+  userId     String
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  personaKey String
+  requirementId String?
+
+  turnsJson  String  @default("[]") // [{ role: "trainee" | "candidate", text, at }]
+  // Scored deterministically from the transcript, never by the model. See
+  // lib/training.js for why.
+  score      Int?
+  percent    Int?
+  verdict    String? // strong | solid | needs-work | poor
+  resultJson String? // the full breakdown, so an old score can still be explained
+  aiUsed     Boolean @default(false)
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([userId, startedAt])
+  @@index([finishedAt])
 }

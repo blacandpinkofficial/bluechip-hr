@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability } from "@/lib/auth";
 import { standardMonthHours } from "@/lib/payroll";
+import { istDay } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,15 +33,26 @@ export async function GET() {
     byUser.get(s.userId).push(s);
   }
 
+  // "In force" means effective ON OR BEFORE today — not simply the newest row.
+  // Taking history[0] counted a future-dated raise as the current salary, so
+  // this screen showed a salary set while /api/payroll still reported "no
+  // salary set" and paid zero for the month. Two screens, one person, opposite
+  // answers.
+  const today = istDay();
+
   return NextResponse.json({
     people: users.map((u) => {
       const history = byUser.get(u.id) || [];
-      const current = history[0] || null;
+      const current = history.find((h) => new Date(h.effectiveFrom) <= today) || null;
+      const upcoming = history.filter((h) => new Date(h.effectiveFrom) > today);
       return {
         user: u,
         current: current
           ? { ...current, standardMonthHours: standardMonthHours(current) }
           : null,
+        // Surfaced rather than hidden: a raise dated next month is a real thing
+        // somebody set, and it should be visible before it takes effect.
+        upcoming,
         history,
       };
     }),
