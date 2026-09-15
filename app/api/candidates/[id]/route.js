@@ -66,8 +66,42 @@ export async function PATCH(req, { params }) {
       }
       set("stage", b.stage);
     }
-    if (b.requirementId !== undefined) set("requirementId", b.requirementId || null);
+    if (b.requirementId !== undefined) {
+      const rid = String(b.requirementId || "").trim() || null;
+      if (rid) {
+        // Pointing a candidate at an opening that has since been closed and
+        // deleted would come back as a foreign-key 500. The recruiter's real
+        // problem is that the list they were choosing from is out of date.
+        const opening = await prisma.requirement.findUnique({
+          where: { id: rid },
+          select: { id: true },
+        });
+        if (!opening) {
+          return NextResponse.json(
+            { error: "That opening no longer exists — pick another one." },
+            { status: 400 }
+          );
+        }
+      }
+      set("requirementId", rid);
+    }
     if (b.archived !== undefined) set("archived", !!b.archived);
+
+    // The single outstanding callback, set or cleared from the call list
+    // without logging a dial. Deliberately NOT a call: callCount is the day's
+    // productivity figure, and "I'll ring him Thursday" is not a call made.
+    // null or "" clears it — clearing is how somebody leaves the due queue.
+    if (b.nextFollowUpAt !== undefined) {
+      if (b.nextFollowUpAt === null || b.nextFollowUpAt === "") {
+        set("nextFollowUpAt", null);
+      } else {
+        const d = new Date(b.nextFollowUpAt);
+        if (Number.isNaN(d.getTime())) {
+          return NextResponse.json({ error: "That callback time didn't make sense." }, { status: 400 });
+        }
+        set("nextFollowUpAt", d);
+      }
+    }
 
     if (Object.keys(data).length === 0) {
       return NextResponse.json({ error: "Nothing to update." }, { status: 400 });

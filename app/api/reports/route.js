@@ -22,6 +22,13 @@ export async function GET(req) {
   const url = new URL(req.url);
   const days = Math.min(90, Math.max(7, Number(url.searchParams.get("days")) || 14));
   const deskWide = can(gate.user.role, "report.desk");
+  // Seeing the desk's WORK and seeing the desk's MONEY are two different
+  // permissions, and report.desk is only the first. A team_leader holds
+  // report.desk so they can watch every caller — they do not hold revenue.read.
+  // Gating a rupee figure on deskWide hands them the whole desk's revenue and
+  // there is then no difference between a team leader and a manager, which is
+  // the entire reason the role exists.
+  const showMoney = can(gate.user.role, "revenue.read");
   // A recruiter sees themselves. A manager sees the desk, or one person.
   const focusId = deskWide ? (url.searchParams.get("user") || null) : gate.user.id;
 
@@ -97,7 +104,10 @@ export async function GET(req) {
         role: u?.role || null,
         ...f,
         weakest: weakestStage(f),
-        revenue: myPl.filter((p) => p.joinedOn && !p.droppedOn).reduce((n, p) => n + (p.revenue || 0), 0),
+        // Omitted, not zeroed: a zero reads as "this person earned nothing".
+        ...(showMoney
+          ? { revenue: myPl.filter((p) => p.joinedOn && !p.droppedOn).reduce((n, p) => n + (p.revenue || 0), 0) }
+          : {}),
       };
     }).sort((a, b) => b.counts.joined - a.counts.joined || b.counts.calls - a.counts.calls);
   }
@@ -134,7 +144,7 @@ export async function GET(req) {
         selects: ivToday.filter((i) => i.outcome === "selected").length,
       };
     })(),
-    revenue: deskWide
+    revenue: showMoney
       ? placements.filter((p) => p.joinedOn && !p.droppedOn).reduce((n, p) => n + (p.revenue || 0), 0)
       : undefined,
   });

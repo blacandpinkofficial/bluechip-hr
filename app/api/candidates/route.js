@@ -115,6 +115,28 @@ export async function GET(req) {
     },
   });
 
+  // "Last reached" is not "last dialled". Three no-answers in a row move
+  // lastContactedAt every time and say nothing about whether anybody has
+  // actually spoken to this person — which is the fact a telecaller needs
+  // before deciding how to open the call. One grouped query for the whole
+  // page, not one per row.
+  const ids = rows.map((r) => r.id);
+  const reached = ids.length
+    ? await prisma.candidateCall
+        .groupBy({
+          by: ["candidateId"],
+          where: { candidateId: { in: ids }, outcome: "connected" },
+          _max: { calledAt: true },
+        })
+        .catch((e) => {
+          console.error("[candidates] last-reached lookup failed:", e?.message);
+          return [];
+        })
+    : [];
+  const reachedAt = new Map(
+    (Array.isArray(reached) ? reached : []).map((r) => [r.candidateId, r._max?.calledAt || null])
+  );
+
   return NextResponse.json({
     candidates: rows.map((c) => {
       // Screening runs here, not in the browser: the requirement's criteria
@@ -143,9 +165,18 @@ export async function GET(req) {
         education: c.education,
         callCount: c.callCount,
         lastContactedAt: c.lastContactedAt,
+        // The last time anyone actually got through, as opposed to the last
+        // time the number was dialled.
+        lastConnectedAt: reachedAt.get(c.id) || null,
+        // The single outstanding callback. The call list shows and edits it in
+        // place, so it has to come down with the row.
+        nextFollowUpAt: c.nextFollowUpAt,
         interviewCount: c._count.interviews,
         lastCall: c.calls[0] || null,
         owner: c.owner,
+        // Flat, alongside the nested summary: the opening picker on the row
+        // needs an id to compare against, not an object to dig through.
+        requirementId: c.requirementId,
         requirement: c.requirement && {
           id: c.requirement.id,
           designation: c.requirement.designation,
@@ -171,19 +202,21 @@ export async function POST(req) {
   const gate = await requireCapability("candidate.write");
   if (!gate.ok) return gate.response;
 
+  // Parsed outside the try so the duplicate handler in the catch can still see
+  // the number it was trying to write.
+  const b = await req.json().catch(() => ({}));
+  const name = String(b.name || "").trim();
+  const phone = String(b.phone || "").replace(/[^\d+]/g, "").slice(-10);
+
+  if (!name) return NextResponse.json({ error: "Enter the candidate's name." }, { status: 400 });
+  if (phone.length !== 10) {
+    return NextResponse.json(
+      { error: "Enter a 10-digit mobile number." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const b = await req.json().catch(() => ({}));
-    const name = String(b.name || "").trim();
-    const phone = String(b.phone || "").replace(/[^\d+]/g, "").slice(-10);
-
-    if (!name) return NextResponse.json({ error: "Enter the candidate's name." }, { status: 400 });
-    if (phone.length !== 10) {
-      return NextResponse.json(
-        { error: "Enter a 10-digit mobile number." },
-        { status: 400 }
-      );
-    }
-
     // One phone number, one person. Without this the same candidate arrives
     // three times from three sources and two recruiters call them the same
     // morning — which is exactly what the spreadsheet does today. Tell the
@@ -192,15 +225,23 @@ export async function POST(req) {
       where: { phone },
       include: { owner: { select: { name: true } } },
     });
-    if (existing) {
-      return NextResponse.json(
-        {
-          error: `${existing.name} is already on the list${existing.owner ? ` (with ${existing.owner.name})` : ""}.`,
-          candidateId: existing.id,
-          duplicate: true,
-        },
-        { status: 409 }
-      );
+    if (existing) return duplicateResponse(existing);
+
+    // An opening that does not exist would otherwise surface as a foreign-key
+    // error and a 500 that reads like the app is broken, when the real answer
+    // is that the requirement was closed while the row was being typed.
+    const requirementId = String(b.requirementId || "").trim() || null;
+    if (requirementId) {
+      const req2 = await prisma.requirement.findUnique({
+        where: { id: requirementId },
+        select: { id: true },
+      });
+      if (!req2) {
+        return NextResponse.json(
+          { error: "That opening no longer exists — pick another one." },
+          { status: 400 }
+        );
+      }
     }
 
     const created = await prisma.candidate.create({
@@ -219,8 +260,11 @@ export async function POST(req) {
         education: String(b.education || "").trim() || null,
         hasRelieving: typeof b.hasRelieving === "boolean" ? b.hasRelieving : null,
         hasArrears: typeof b.hasArrears === "boolean" ? b.hasArrears : null,
-        requirementId: b.requirementId || null,
+        requirementId,
         ownerId: gate.user.id,
+        // Hand-entered or imported, everyone starts at the top of the pile.
+        // Never anything else: this is a create, so there is no earlier stage
+        // it could be moved backwards from.
         stage: "new",
       },
     });
@@ -239,12 +283,54 @@ export async function POST(req) {
 
     return NextResponse.json({ candidate: created }, { status: 201 });
   } catch (e) {
+    // The findUnique above is a check, not a lock: two telecallers typing the
+    // same referral at the same moment both pass it and one of them hits the
+    // @@unique([phone]) index on the way in. That is a duplicate, not a
+    // failure, and it must read exactly like the one caught above — a 500 here
+    // would look like the app lost the candidate.
+    if (e?.code === "P2002") {
+      const clash = await prisma.candidate
+        .findUnique({ where: { phone }, include: { owner: { select: { name: true } } } })
+        .catch(() => null);
+      if (clash) return duplicateResponse(clash);
+      return NextResponse.json(
+        { error: "That number is already on the list.", duplicate: true },
+        { status: 409 }
+      );
+    }
     console.error("[POST /api/candidates]", e?.message || e);
     return NextResponse.json({ error: "Could not save the candidate." }, { status: 500 });
   }
 }
 
+/**
+ * The one answer to "this number is already here". Says who it is, so the
+ * caller can offer to open them instead of leaving a telecaller staring at a
+ * refusal, and says where they are so the screen knows which queue to look in
+ * — somebody set aside months ago lives in History and would not be found by a
+ * search of the working list.
+ */
+function duplicateResponse(existing) {
+  return NextResponse.json(
+    {
+      error: `${existing.name} is already on the list${existing.owner ? ` (with ${existing.owner.name})` : ""}.`,
+      candidateId: existing.id,
+      name: existing.name,
+      phone: existing.phone,
+      stage: existing.stage,
+      archived: !!existing.archived,
+      duplicate: true,
+    },
+    { status: 409 }
+  );
+}
+
+// Blank is "not asked", not zero. Number("") is 0, which is finite and not
+// negative, so the old version turned an untouched Experience box into
+// "fresher" and an untouched Notice box into "can join immediately" — two
+// answers nobody gave, on the two fields a client rejects people over.
 function intOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
 }

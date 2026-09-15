@@ -14,7 +14,26 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MODES = ["telephonic", "direct", "video"];
+
+// The outcome vocabulary, as a real runtime list and not a comment on the
+// schema. Anything not on this list is refused: an outcome is read back by the
+// productivity counts, by Reports and by the candidate's stage, and one typo'd
+// value ("Selected", "select") is a row that is counted by nothing and noticed
+// by nobody until the month is closed.
 const OUTCOMES = ["pending", "selected", "rejected", "on-hold", "no-show"];
+
+// A round is a small positive integer. The cap is not fussiness — a fat-finger
+// "202" in the round box makes the interview sort and read as nonsense forever.
+const MAX_ROUND = 20;
+
+// The candidate pipeline, in order. Used to move a candidate FORWARDS only.
+// "dropped" is deliberately NOT in this list, and that is exactly why every
+// index is checked against -1 before it is compared. indexOf("dropped") is -1,
+// and -1 is less than every real index, so an unchecked comparison reads as
+// "miles behind, push them forward" and quietly resurrects a dropped candidate.
+// Any unrecognised stage is left exactly as it is rather than guessed at.
+const ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined"];
+const SELECTED_AT = ORDER.indexOf("selected");
 
 export async function GET(req) {
   const gate = await requireCapability("interview.read");
@@ -43,7 +62,7 @@ export async function GET(req) {
       requirement: {
         select: {
           id: true, designation: true, location: true,
-          client: { select: { name: true } },
+          client: { select: { id: true, name: true } },
         },
       },
     },
@@ -55,10 +74,55 @@ export async function GET(req) {
     ? rows
     : rows.filter((r) => !r.candidate?.ownerId || r.candidate.ownerId === gate.user.id);
 
+  // Has a selection already been turned into a placement? The screen needs to
+  // know so it can offer the handover once and then stop offering it — there is
+  // a unique constraint on (candidateId, requirementId), and a button that
+  // always fails on the second press is worse than no button.
+  //
+  // Only the existence of the placement is looked up here, never its money.
+  const placementBy = new Map();
+  const selectedRows = visible.filter((i) => i.outcome === "selected");
+  if (selectedRows.length > 0 && can(gate.user.role, "placement.read")) {
+    const pairs = selectedRows.map((i) => ({
+      candidateId: i.candidateId,
+      requirementId: i.requirementId,
+    }));
+    const placed = await prisma.placement
+      .findMany({
+        where: { OR: pairs },
+        select: {
+          id: true, candidateId: true, requirementId: true,
+          joinedOn: true, droppedOn: true,
+        },
+      })
+      .catch((e) => {
+        console.error("[interviews] placement lookup failed:", e?.message);
+        return [];
+      });
+    for (const p of placed) {
+      placementBy.set(`${p.candidateId}::${p.requirementId}`, {
+        id: p.id,
+        joined: !!p.joinedOn,
+        dropped: !!p.droppedOn,
+      });
+    }
+  }
+
   return NextResponse.json({
     when,
+    // What this person may actually do, decided here by capability and never by
+    // a role string in the browser. The screen hides what it cannot do; the
+    // handlers below refuse it regardless.
+    me: {
+      id: gate.user.id,
+      canWrite: can(gate.user.role, "interview.write"),
+      canPlace: can(gate.user.role, "placement.write"),
+      canSeePlacements: can(gate.user.role, "placement.read"),
+    },
     interviews: visible.map((i) => ({
       id: i.id,
+      candidateId: i.candidateId,
+      requirementId: i.requirementId,
       scheduledAt: i.scheduledAt,
       mode: i.mode,
       location: i.location,
@@ -74,6 +138,7 @@ export async function GET(req) {
         location: i.requirement.location,
         clientName: i.requirement.client?.name,
       },
+      placement: placementBy.get(`${i.candidateId}::${i.requirementId}`) || null,
     })),
     counts: {
       // "Direct Line ups scheduled" and "Telephonic scheduled" on the old
@@ -140,10 +205,16 @@ export async function POST(req) {
       // Booking a slot moves them to lined-up, and ties them to this opening if
       // they weren't already — otherwise the candidate list shows someone with
       // an interview tomorrow and no role against their name.
+      //
+      // Forwards only: someone already at "interviewed" or "selected" is not
+      // pulled back to lined-up because a second round was booked.
+      const at = ORDER.indexOf(candidate.stage);
+      const to = ORDER.indexOf("lined-up");
+      const moveUp = at >= 0 && at < to;
       await tx.candidate.update({
         where: { id: candidateId },
         data: {
-          ...(["new", "contacted", "shortlisted"].includes(candidate.stage) ? { stage: "lined-up" } : {}),
+          ...(moveUp ? { stage: "lined-up", archived: false } : {}),
           ...(candidate.requirementId ? {} : { requirementId }),
         },
       });
@@ -184,6 +255,42 @@ function mayTouch(user, candidate) {
   return !candidate.ownerId || candidate.ownerId === user.id;
 }
 
+/**
+ * Move a candidate forward to `target`, never backward, never sideways.
+ *
+ * Both indexes are checked against -1 before they are compared — see ORDER at
+ * the top of the file for why that is not optional. Returns the stage it moved
+ * to, or null if it left the candidate alone.
+ */
+async function advanceStage(tx, candidateId, currentStage, target) {
+  const to = ORDER.indexOf(target);
+  if (to < 0) return null;
+  const at = ORDER.indexOf(currentStage);
+  if (at < 0 || at >= to) return null;
+  // Un-archive as we go. A candidate set aside by hand keeps archived:true, and
+  // every working queue filters on archived:false — so without this the
+  // interview moves them up the pipeline and straight out of the call list.
+  await tx.candidate.update({
+    where: { id: candidateId },
+    data: { stage: target, archived: false },
+  });
+  return target;
+}
+
+/**
+ * A rejection at interview drops the candidate — but only if they are not
+ * already further on than that. Someone at "selected" or "joined" has an offer
+ * somewhere; a rejection recorded later on a different opening must not reach
+ * back and kill it. An unrecognised stage (including "dropped" itself, which is
+ * not in ORDER) is left alone.
+ */
+async function markDropped(tx, candidateId, currentStage) {
+  const at = ORDER.indexOf(currentStage);
+  if (at < 0 || at >= SELECTED_AT) return null;
+  await tx.candidate.update({ where: { id: candidateId }, data: { stage: "dropped" } });
+  return "dropped";
+}
+
 export async function PATCH(req) {
   const gate = await requireCapability("interview.write");
   if (!gate.ok) return gate.response;
@@ -206,6 +313,7 @@ export async function PATCH(req) {
     if (b.attended !== undefined) data.attended = b.attended === null ? null : !!b.attended;
     if (b.feedback !== undefined) data.feedback = String(b.feedback || "").trim() || null;
     if (b.interviewer !== undefined) data.interviewer = String(b.interviewer || "").trim() || null;
+    if (b.location !== undefined) data.location = String(b.location || "").trim() || null;
     if (b.mode !== undefined && MODES.includes(b.mode)) data.mode = b.mode;
     if (b.scheduledAt !== undefined) {
       const d = new Date(b.scheduledAt);
@@ -214,6 +322,24 @@ export async function PATCH(req) {
       }
       data.scheduledAt = d;
     }
+    if (b.round !== undefined) {
+      const n = Number(b.round);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > MAX_ROUND) {
+        return NextResponse.json(
+          { error: `The round must be a whole number between 1 and ${MAX_ROUND}.` },
+          { status: 400 }
+        );
+      }
+      data.round = n;
+      // A later round starts over: the panel has not happened yet, so the
+      // attendance mark and the outcome from the previous round must not be
+      // left standing against it. Without this a second round shows up already
+      // "selected" the moment it is booked.
+      if (n > existing.round && b.outcome === undefined && b.attended === undefined) {
+        data.outcome = "pending";
+        data.attended = null;
+      }
+    }
     if (b.outcome !== undefined) {
       if (!OUTCOMES.includes(b.outcome)) {
         return NextResponse.json({ error: `Unknown outcome "${b.outcome}".` }, { status: 400 });
@@ -221,7 +347,7 @@ export async function PATCH(req) {
       data.outcome = b.outcome;
       // Recording an outcome at all means they turned up, unless it was a
       // no-show. Saves the recruiter a second click on every single interview.
-      if (data.attended === undefined) {
+      if (b.attended === undefined) {
         if (b.outcome === "no-show") data.attended = false;
         else if (b.outcome !== "pending") data.attended = true;
       }
@@ -231,25 +357,41 @@ export async function PATCH(req) {
       return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const iv = await tx.interview.update({ where: { id }, data });
 
-      // Move the candidate to match, forward only.
-      const nextStage =
-        data.outcome === "selected" ? "selected"
-        : data.outcome === "rejected" ? "dropped"
-        : data.attended === true ? "interviewed"
-        : null;
-      if (nextStage && existing.candidate && existing.candidate.stage !== "joined") {
-        await tx.candidate.update({
-          where: { id: existing.candidate.id },
-          data: { stage: nextStage },
-        });
+      // Pull the candidate along to match what just happened, forwards only.
+      //
+      // Each fact has a floor, and the furthest-forward floor wins: booking a
+      // time means at least lined-up, turning up means at least interviewed,
+      // and a selection means selected. Nothing here can move anyone back, so
+      // the order these are applied in does not change the answer.
+      let stage = existing.candidate?.stage || null;
+      let moved = null;
+
+      if (existing.candidate) {
+        let floor = null;
+        const raise = (s) => {
+          if (ORDER.indexOf(s) > ORDER.indexOf(floor)) floor = s;
+        };
+        if (data.scheduledAt !== undefined) raise("lined-up");
+        if (data.attended === true) raise("interviewed");
+        if (data.outcome === "selected") raise("selected");
+
+        if (floor) {
+          const to = await advanceStage(tx, existing.candidate.id, stage, floor);
+          if (to) { stage = to; moved = to; }
+        }
+        if (data.outcome === "rejected") {
+          const to = await markDropped(tx, existing.candidate.id, stage);
+          if (to) { stage = to; moved = to; }
+        }
       }
-      return iv;
+
+      return { interview: iv, candidateStage: stage, movedTo: moved };
     });
 
-    return NextResponse.json({ interview: updated });
+    return NextResponse.json(result);
   } catch (e) {
     console.error("[PATCH /api/interviews]", e?.message || e);
     return NextResponse.json({ error: "Could not save the change." }, { status: 500 });

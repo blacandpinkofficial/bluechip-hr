@@ -10,16 +10,67 @@
 // means two different things depending on the row, and a silent import that
 // guesses wrong produces a hundred openings that look right and bill wrong.
 // Someone has to look at it once.
+//
+// GET on this same path hands back the filled-in sample sheet to copy.
 
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
-import { parseJobSheet } from "@/lib/importSheet";
+import {
+  parseJobSheet,
+  SAMPLE_JOB_SHEET_TEMPLATE,
+  sampleJobSheetAoa,
+} from "@/lib/importSheet";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// GET /api/import/requirements — the sample job description sheet.
+//
+// Built here rather than served from public/ so the columns in the download
+// are the columns the parser accepts, always: both come from
+// SAMPLE_JOB_SHEET_TEMPLATE in lib/importSheet.js, next to the HEADER_MAP that
+// decides what is accepted. A stale file in public/ is worse than no sample at
+// all — it teaches column names that quietly stopped working.
+//
+// Same gate as POST. Someone who cannot run the import has no use for the
+// sheet it takes, and the commercials column in here is a worked example of
+// how this agency bills.
+export async function GET() {
+  const gate = await requireCapability("import.run");
+  if (!gate.ok) return gate.response;
+
+  try {
+    const headers = SAMPLE_JOB_SHEET_TEMPLATE.headers;
+    const ws = XLSX.utils.aoa_to_sheet(sampleJobSheetAoa());
+
+    ws["!cols"] = headers.map((h, i) => ({
+      wch: SAMPLE_JOB_SHEET_TEMPLATE.colWidths[i] || Math.max(14, h.length + 4),
+    }));
+    // The title row is merged across the sheet, the way the real ones arrive —
+    // and the way parseJobSheet's header-row scan expects to find them.
+    ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, SAMPLE_JOB_SHEET_TEMPLATE.sheetName);
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    return new NextResponse(buf, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Disposition": `attachment; filename="${SAMPLE_JOB_SHEET_TEMPLATE.filename}"`,
+        "Content-Length": String(buf.length),
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (e) {
+    console.error("[GET /api/import/requirements]", e?.message || e);
+    return NextResponse.json({ error: "Could not build the sample file." }, { status: 500 });
+  }
+}
 
 export async function POST(req) {
   const gate = await requireCapability("import.run");

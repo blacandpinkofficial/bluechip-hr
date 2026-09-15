@@ -74,6 +74,20 @@ const OUTCOMES = [
   { key: "wrong-number", label: "Wrong number", tone: "bg-white border border-slate-300 hover:bg-slate-50" },
 ];
 
+// Where a hand-entered candidate came from. The same six the importer and the
+// schema use — a seventh spelling here would quietly split every source report.
+const SOURCES = ["referral", "walk-in", "naukri", "database", "linkedin", "whatsapp"];
+
+// A blank Add row. Kept as a function rather than a shared object so clearing
+// the row after a save cannot hand back the object the last save mutated.
+function blankNew() {
+  return {
+    name: "", phone: "", designation: "", location: "",
+    expMonths: "", currentCtc: "", expectedCtc: "", noticeDays: "",
+    source: "", requirementId: "",
+  };
+}
+
 const VERDICT = {
   blocked: { label: "Client will refuse", cls: "bg-red-100 text-red-800 border-red-300" },
   ask:     { label: "Questions to ask",   cls: "bg-sky-100 text-sky-800 border-sky-300" },
@@ -119,7 +133,25 @@ function tomorrowMorning() {
   const d = new Date();
   d.setDate(d.getDate() + 1);
   d.setHours(10, 0, 0, 0);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return localInput(d);
+}
+// An instant as <input type="datetime-local"> wants it: the user's own clock,
+// no timezone suffix. Empty for anything unparseable, so a bad stored value
+// shows an empty picker rather than the words "Invalid Date" inside the box.
+function localInput(d) {
+  if (!d) return "";
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return "";
+  return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}T${pad2(x.getHours())}:${pad2(x.getMinutes())}`;
+}
+// The short Indian format every other date on this screen already uses.
+function whenShort(d) {
+  if (!d) return "";
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return "";
+  return x.toLocaleString("en-IN", {
+    day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true,
+  });
 }
 
 /** One tri-state answer, captured in a single click while on the call. */
@@ -158,6 +190,49 @@ export default function CandidatesPage() {
   // exactly the batch they just imported instead of the whole database.
   const [requirementId, setRequirementId] = useState("");
 
+  const [busy, setBusy] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [callbackAt, setCallbackAt] = useState("");
+  const [logged, setLogged] = useState(0); // calls logged in this sitting
+  const [history, setHistory] = useState([]); // remarks on the open candidate
+  const [historyFor, setHistoryFor] = useState(null);
+  // Forces a re-read of the open candidate's remarks without pretending a call
+  // was made. See saveNote.
+  const [historyTick, setHistoryTick] = useState(0);
+  const [script, setScript] = useState(null);
+  const [scriptBusy, setScriptBusy] = useState(false);
+  // The row currently being written to. Per-row rather than one flag for the
+  // page: disabling every button on the screen because one is saving makes a
+  // fast list feel broken.
+  const [busyId, setBusyId] = useState(null);
+  const [cbRow, setCbRow] = useState(null);   // row whose callback picker is open
+  const [cbAt, setCbAt] = useState("");
+
+  // The openings a candidate can be called against. Fetched once for the page
+  // and shared by the Add row and every row's opening picker — forty rows each
+  // fetching the same list is forty requests for one answer.
+  const [openings, setOpenings] = useState([]);
+
+  // The after-the-call strip. One row at a time, one control at a time: three
+  // inputs open on every row at once is a wall, and a telecaller who has just
+  // put the phone down is looking for one thing.
+  const [actRow, setActRow] = useState(null);   // { id, kind: "note"|"follow"|"opening" }
+  const [noteText, setNoteText] = useState("");
+  const [followAt, setFollowAt] = useState("");
+
+  // The Add row.
+  const [nf, setNf] = useState(blankNew());
+  const [addMore, setAddMore] = useState(false);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addErr, setAddErr] = useState("");
+  const [added, setAdded] = useState(null);     // { id, name, phone } just created
+  const [dupe, setDupe] = useState(null);       // { id, name, phone, message, archived }
+  const setF = (k, v) => setNf((f) => ({ ...f, [k]: v }));
+  // Setting state is not immediate, so two quick clicks on the same button both
+  // see busyId as null and log the call twice. A ref changes now. This matters
+  // more than it looks: the call count IS the day's productivity figure.
+  const writing = useRef(false);
+
   // The reminders screen links here as /candidates?open=<id>. Nothing read it,
   // so clicking "Open" on an overdue callback landed on the default queue with
   // the person nowhere in sight and no hint as to why. Read from
@@ -167,7 +242,14 @@ export default function CandidatesPage() {
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const req = sp.get("requirement");
-    if (req) { setRequirementId(req); setQueue("new"); }
+    // Arriving from "Start calling" on an imported batch: the Add row defaults
+    // to that same opening, because a referral picked up while working a batch
+    // is almost always for that batch.
+    if (req) {
+      setRequirementId(req);
+      setQueue("new");
+      setNf((f) => ({ ...f, requirementId: req }));
+    }
     const want = sp.get("open");
     if (!want) return;
     setOpenId(want);
@@ -175,24 +257,6 @@ export default function CandidatesPage() {
     // which is the usual case for a callback that slipped.
     setQueue("all");
   }, []);
-  const [busy, setBusy] = useState(false);
-  const [notes, setNotes] = useState("");
-  const [callbackAt, setCallbackAt] = useState("");
-  const [logged, setLogged] = useState(0); // calls logged in this sitting
-  const [history, setHistory] = useState([]); // remarks on the open candidate
-  const [historyFor, setHistoryFor] = useState(null);
-  const [script, setScript] = useState(null);
-  const [scriptBusy, setScriptBusy] = useState(false);
-  // The row currently being written to. Per-row rather than one flag for the
-  // page: disabling every button on the screen because one is saving makes a
-  // fast list feel broken.
-  const [busyId, setBusyId] = useState(null);
-  const [cbRow, setCbRow] = useState(null);   // row whose callback picker is open
-  const [cbAt, setCbAt] = useState("");
-  // Setting state is not immediate, so two quick clicks on the same button both
-  // see busyId as null and log the call twice. A ref changes now. This matters
-  // more than it looks: the call count IS the day's productivity figure.
-  const writing = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -221,6 +285,22 @@ export default function CandidatesPage() {
     const t = setTimeout(load, q ? 250 : 0);
     return () => clearTimeout(t);
   }, [load, q]);
+
+  // Every recruiter holds requirement.read, so this is the same list for
+  // everyone on the desk. A failure is silent on purpose: the openings picker
+  // is a convenience, and a red banner across the call list because a dropdown
+  // could not be filled would stop the day for no reason.
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/requirements?status=open")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!alive || !j) return;
+        setOpenings(Array.isArray(j.requirements) ? j.requirements : []);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   async function patch(id, body) {
     // Optimistic: the answer appears the instant it is clicked, because the
@@ -282,6 +362,22 @@ export default function CandidatesPage() {
                 archived: !!j.archived,
                 callCount: (row.callCount || 0) + 1,
                 lastContactedAt: new Date().toISOString(),
+                // Only a connected call means anybody was actually reached.
+                lastConnectedAt:
+                  outcome === "connected" ? new Date().toISOString() : row.lastConnectedAt,
+                // The server sets the candidate's callback to this call's time
+                // and CLEARS it when there isn't one. Mirroring that here is
+                // what stops the row claiming a callback is still pending
+                // thirty seconds after it was made.
+                nextFollowUpAt: opts.followUpAt || null,
+                // So the note box knows there is now a call to write against,
+                // without refetching the list and losing the reader's place.
+                lastCall: {
+                  calledAt: new Date().toISOString(),
+                  outcome,
+                  notes: opts.notes || null,
+                  followUpAt: opts.followUpAt || null,
+                },
                 justDid: opts.done || `Logged — ${outcome}`,
               }
             : row
@@ -363,6 +459,180 @@ export default function CandidatesPage() {
     }
   }
 
+  /**
+   * Add a candidate by hand, from the calling list.
+   *
+   * Everybody else arrives by bulk import. A referral or a walk-in does not,
+   * and until this existed the only way to get one onto the list was to build
+   * a spreadsheet for one person and import it.
+   *
+   * The phone number is the identity. If it is already here the server answers
+   * 409 with who it is, and this offers to open them — never a second row for
+   * the same human being, and never a silent overwrite of what the last
+   * recruiter learned about them.
+   */
+  async function addCandidate() {
+    if (addBusy) return;
+    const name = nf.name.trim();
+    const phone = nf.phone.replace(/[^\d]/g, "").slice(-10);
+    if (!name) { setAddErr("Type the candidate's name."); setDupe(null); return; }
+    if (phone.length !== 10) { setAddErr("Type the 10-digit mobile number."); setDupe(null); return; }
+
+    setAddBusy(true);
+    setAddErr("");
+    setDupe(null);
+    setAdded(null);
+    try {
+      const r = await fetch("/api/candidates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...nf, name, phone }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 409 && j.duplicate) {
+        setDupe({
+          id: j.candidateId || "",
+          name: j.name || "",
+          phone: j.phone || phone,
+          message: j.error || "That number is already on the list.",
+          archived: !!j.archived || j.stage === "dropped",
+        });
+        return;
+      }
+      if (!r.ok) throw new Error(j.error || "Could not save the candidate.");
+      setNf(blankNew());
+      setAddMore(false);
+      setAdded({ id: j.candidate?.id || "", name: j.candidate?.name || name, phone });
+      // Brings them onto the list when the current queue would show them
+      // (Never called, Everyone). When it would not, the line above still
+      // offers a button that goes straight to them.
+      load();
+    } catch (e) {
+      setAddErr(e.message);
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  /**
+   * Jump to one person by number, wherever they are — including History, which
+   * a search of the working queues would never reach. The opening filter comes
+   * off too: the whole point is to land on this person, and a filter left on is
+   * how "open them" shows an empty list.
+   */
+  function openExisting(id, phone, archived) {
+    setRequirementId("");
+    setQueue(archived ? "history" : "all");
+    setQ(phone || "");
+    setOpenId(id || null);
+    setDupe(null);
+    setAdded(null);
+    setActRow(null);
+  }
+
+  /**
+   * The remark, written against the call that has just been made.
+   *
+   * Not a new call row: the call count is the desk's productivity figure, and
+   * typing out what somebody said is not a second dial.
+   */
+  async function saveNote(c) {
+    if (writing.current) return;
+    writing.current = true;
+    setBusyId(c.id);
+    setError("");
+    try {
+      const res = await fetch(`/api/candidates/${c.id}/calls`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: noteText }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || "That note did not save.");
+      const saved = j.call?.notes ?? null;
+      setRows((rs) =>
+        rs.map((row) =>
+          row.id === c.id
+            ? {
+                ...row,
+                lastCall: row.lastCall ? { ...row.lastCall, notes: saved } : row.lastCall,
+                justDid: saved ? "Note saved" : "Note cleared",
+              }
+            : row
+        )
+      );
+      // The open panel reads the full history from the server, so it has to be
+      // asked again to show the edited remark. Deliberately NOT by bumping
+      // `logged`: that number is "calls logged in this sitting", and counting a
+      // typed remark as a call is exactly the padding this screen exists to
+      // make unnecessary.
+      if (openId === c.id) setHistoryTick((n) => n + 1);
+      setActRow(null);
+      setNoteText("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      writing.current = false;
+      setBusyId(null);
+    }
+  }
+
+  /** Set or clear the one outstanding callback, without logging a dial. */
+  function setFollowUp(c, iso) {
+    patch(c.id, { nextFollowUpAt: iso });
+    setRows((rs) =>
+      rs.map((row) =>
+        row.id === c.id
+          ? { ...row, justDid: iso ? `Follow-up set for ${whenShort(iso)}` : "Follow-up cleared" }
+          : row
+      )
+    );
+    setActRow(null);
+    setFollowAt("");
+  }
+
+  /**
+   * Change which opening this person is being called for.
+   *
+   * Screening is worked out on the server against the requirement's criteria,
+   * so the old verdict is dropped rather than left on screen claiming to
+   * describe the new opening. It comes back on the next refresh.
+   */
+  function setOpening(c, id) {
+    const chosen = Array.isArray(openings) ? openings.find((o) => o.id === id) : null;
+    patch(c.id, { requirementId: id || null });
+    setRows((rs) =>
+      rs.map((row) =>
+        row.id === c.id
+          ? {
+              ...row,
+              requirementId: id || null,
+              requirement: chosen
+                ? {
+                    id: chosen.id,
+                    designation: chosen.designation,
+                    location: chosen.location,
+                    clientName: chosen.clientName,
+                    takeHomeMin: chosen.takeHomeMin,
+                    takeHomeMax: chosen.takeHomeMax,
+                    relievingRequired: chosen.relievingRequired,
+                    arrearsAllowed: chosen.arrearsAllowed,
+                    educationMin: chosen.educationMin,
+                    expMinMonths: chosen.expMinMonths,
+                    expMaxMonths: chosen.expMaxMonths,
+                  }
+                : null,
+              screening: null,
+              justDid: chosen
+                ? `Now calling for ${chosen.designation} — refresh to re-check the client's criteria`
+                : "Opening cleared",
+            }
+          : row
+      )
+    );
+    setActRow(null);
+  }
+
   // Every remark ever left on the open candidate. Loaded on expand rather than
   // with the list: forty candidates' call histories is a lot of rows to fetch
   // for the one a recruiter is actually looking at.
@@ -379,7 +649,7 @@ export default function CandidatesPage() {
       })
       .catch(() => {});
     return () => { alive = false; };
-  }, [openId, logged]);
+  }, [openId, logged, historyTick]);
 
 
   async function loadScript(id, withAi) {
@@ -398,6 +668,11 @@ export default function CandidatesPage() {
     }
   }
 
+  // Read in three places, and never trusted to be an array: a failed fetch or a
+  // changed response shape must leave the pickers empty, not break the list
+  // somebody is working.
+  const openList = Array.isArray(openings) ? openings : [];
+
   return (
     <Shell
       title="Calls"
@@ -407,7 +682,7 @@ export default function CandidatesPage() {
         {QUEUES.map((qq) => (
           <button
             key={qq.key}
-            onClick={() => { setQueue(qq.key); setQ(""); setOpenId(null); setCbRow(null); }}
+            onClick={() => { setQueue(qq.key); setQ(""); setOpenId(null); setCbRow(null); setActRow(null); }}
             className={
               "rounded-full px-3 py-1 text-sm transition " +
               (queue === qq.key && !q
@@ -423,8 +698,159 @@ export default function CandidatesPage() {
           className="input max-w-xs ml-auto"
           placeholder="Search name, phone, skill…"
           value={q}
-          onChange={(e) => { setQ(e.target.value); setOpenId(null); }}
+          onChange={(e) => { setQ(e.target.value); setOpenId(null); setActRow(null); }}
         />
+      </div>
+
+      {/* Add a candidate without leaving the calling list. A strip, not a
+          dialog: a referral comes up in the middle of another call and the
+          number has to go down somewhere in the next ten seconds. */}
+      <div className="card p-3 mb-4">
+        <div className="flex flex-wrap items-end gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 pb-2">
+            Add a candidate
+          </span>
+          <input
+            className="input flex-1 min-w-[10rem]"
+            placeholder="Name"
+            aria-label="New candidate's name"
+            value={nf.name}
+            onChange={(e) => setF("name", e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addCandidate(); }}
+          />
+          <input
+            className="input tabular-nums w-36 min-w-[9rem]"
+            placeholder="Mobile"
+            inputMode="numeric"
+            aria-label="New candidate's mobile number"
+            value={nf.phone}
+            onChange={(e) => setF("phone", e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addCandidate(); }}
+          />
+          <input
+            className="input flex-1 min-w-[10rem]"
+            placeholder="Doing what now"
+            aria-label="New candidate's designation"
+            value={nf.designation}
+            onChange={(e) => setF("designation", e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addCandidate(); }}
+          />
+          <button
+            className="btn bg-chip-600 text-white hover:bg-chip-700 px-4 py-2"
+            disabled={addBusy}
+            onClick={addCandidate}
+          >
+            {addBusy ? "Adding…" : "Add"}
+          </button>
+          <button
+            type="button"
+            className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-2 text-xs"
+            onClick={() => setAddMore((v) => !v)}
+          >
+            {addMore ? "Fewer details" : "More details"}
+          </button>
+        </div>
+
+        {addMore && (
+          <div className="grid sm:grid-cols-3 lg:grid-cols-4 gap-2 mt-3">
+            <div>
+              <label htmlFor="new-loc" className="label">Where they are</label>
+              <input id="new-loc" className="input" placeholder="Chennai"
+                value={nf.location} onChange={(e) => setF("location", e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="new-exp" className="label">Experience (months)</label>
+              <input id="new-exp" className="input" inputMode="numeric" placeholder="0 for fresher"
+                value={nf.expMonths} onChange={(e) => setF("expMonths", e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="new-cur" className="label">Current take-home</label>
+              <input id="new-cur" className="input" placeholder="18k"
+                value={nf.currentCtc} onChange={(e) => setF("currentCtc", e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="new-exp2" className="label">Expecting</label>
+              <input id="new-exp2" className="input" placeholder="22k"
+                value={nf.expectedCtc} onChange={(e) => setF("expectedCtc", e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="new-not" className="label">Notice (days)</label>
+              <input id="new-not" className="input" inputMode="numeric" placeholder="0 if immediate"
+                value={nf.noticeDays} onChange={(e) => setF("noticeDays", e.target.value)} />
+            </div>
+            <div>
+              <label htmlFor="new-src" className="label">Where from</label>
+              <select id="new-src" className="input" value={nf.source}
+                onChange={(e) => setF("source", e.target.value)}>
+                <option value="">Not said</option>
+                {SOURCES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="new-req" className="label">Calling them for</label>
+              <select id="new-req" className="input" value={nf.requirementId}
+                onChange={(e) => setF("requirementId", e.target.value)}>
+                <option value="">No opening yet</option>
+                {openList.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.designation} — {o.clientName} · {o.location}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {addErr && (
+          <div role="alert" className="mt-2 text-sm text-red-800 bg-red-50 border border-red-200 rounded px-3 py-2">
+            {addErr}
+          </div>
+        )}
+
+        {/* The number is already here. Never a second row for the same person,
+            and never an overwrite of what the last recruiter learned — just a
+            way through to them. */}
+        {dupe && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded px-3 py-2">
+            <span>{dupe.message} Nothing was changed.</span>
+            {dupe.id && (
+              <button
+                className="btn bg-chip-600 text-white hover:bg-chip-700 px-3 py-1.5 text-xs"
+                onClick={() => openExisting(dupe.id, dupe.phone, dupe.archived)}
+              >
+                Open {dupe.name || "them"}
+              </button>
+            )}
+            <button
+              className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+              onClick={() => setDupe(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {added && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+            <span><b>{added.name}</b> is on the list, waiting to be called.</span>
+            {added.id && (
+              <button
+                className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+                onClick={() => openExisting(added.id, added.phone, false)}
+              >
+                Open them
+              </button>
+            )}
+            <button
+              className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+              onClick={() => setAdded(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {requirementId && (
@@ -445,7 +871,7 @@ export default function CandidatesPage() {
             <b className="tabular-nums">{logged}</b> call{logged === 1 ? "" : "s"} logged in this sitting —
             counted automatically, nothing to tally at the end of the day.
           </span>
-          <button className="btn-ghost text-xs py-1 ml-auto" onClick={() => { setOpenId(null); setCbRow(null); load(); }}>
+          <button className="btn-ghost text-xs py-1 ml-auto" onClick={() => { setOpenId(null); setCbRow(null); setActRow(null); load(); }}>
             Refresh the list
           </button>
         </div>
@@ -484,6 +910,9 @@ export default function CandidatesPage() {
             const inHistory = queue === "history";
             const rowBusy = busyId === c.id;
             const nextStage = NEXT_STAGE[c.stage];
+            // Which after-the-call control this row currently has open, if any.
+            const act = actRow && actRow.id === c.id ? actRow : null;
+            const lastNote = c.lastCall && c.lastCall.notes ? c.lastCall.notes : "";
             return (
               <div
                 key={c.id}
@@ -512,8 +941,20 @@ export default function CandidatesPage() {
                       {months(c.expMonths)} · {money(c.expectedCtc)} wanted
                       {c.noticeDays != null && ` · ${c.noticeDays}d notice`}
                     </div>
-                    <div className="text-xs text-slate-500 min-w-[8rem]">
-                      {c.callCount} call{c.callCount === 1 ? "" : "s"} · {ago(c.lastContactedAt)}
+                    {/* How often this person has been called, and — separately
+                        — when anybody last actually got through. Three
+                        no-answers move "dialled" every time and mean nobody has
+                        spoken to them at all, which is the difference between
+                        opening with "following up on our chat" and introducing
+                        yourself from scratch. */}
+                    <div className="text-xs text-slate-500 min-w-[9rem]">
+                      <div>
+                        <b className="tabular-nums text-slate-700">{c.callCount}</b>
+                        {" "}call{c.callCount === 1 ? "" : "s"} · dialled {ago(c.lastContactedAt)}
+                      </div>
+                      <div className={c.lastConnectedAt ? "text-emerald-700" : "text-amber-700"}>
+                        {c.lastConnectedAt ? `reached ${ago(c.lastConnectedAt)}` : "never reached"}
+                      </div>
                     </div>
                     <span
                       className={
@@ -642,6 +1083,162 @@ export default function CandidatesPage() {
                 {c.justDid && (
                   <div className="px-4 pb-3 -mt-1 text-xs text-emerald-800">
                     ✓ {c.justDid}
+                  </div>
+                )}
+
+                {/* The step AFTER a good call, on the row itself.
+                    The left half is the standing facts — what they are being
+                    called for, whether a callback is promised, the last thing
+                    they said. The right half changes those three things in
+                    place. Nothing here opens a dialog and nothing navigates
+                    away, because all of it happens in the few seconds after the
+                    phone goes down and before the next number is dialled. */}
+                {!inHistory && (
+                  <div className="border-t border-slate-100 px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+                    <span className="text-slate-500">
+                      {c.requirement ? (
+                        <>
+                          For <b className="text-chip-800">{c.requirement.designation}</b>
+                          {c.requirement.clientName ? ` · ${c.requirement.clientName}` : ""}
+                        </>
+                      ) : (
+                        <span className="text-amber-700">No opening yet</span>
+                      )}
+                    </span>
+                    <span className={c.nextFollowUpAt ? "text-sky-700" : "text-slate-400"}>
+                      {c.nextFollowUpAt
+                        ? `Call back ${whenShort(c.nextFollowUpAt)}`
+                        : "No callback set"}
+                    </span>
+                    {lastNote && (
+                      <span className="text-slate-500 truncate max-w-[20rem]" title={lastNote}>
+                        &ldquo;{lastNote}&rdquo;
+                      </span>
+                    )}
+
+                    {act && act.kind === "note" ? (
+                      <span className="flex flex-wrap items-center gap-1.5 ml-auto">
+                        <input
+                          className="input w-auto min-w-[16rem] py-1.5 text-xs"
+                          placeholder="What they said — you read this before the next call."
+                          aria-label={`Note on the last call with ${c.name}`}
+                          value={noteText}
+                          onChange={(e) => setNoteText(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") saveNote(c); }}
+                        />
+                        <button
+                          disabled={rowBusy}
+                          className="btn bg-chip-600 text-white hover:bg-chip-700 px-3 py-1.5 text-xs"
+                          onClick={() => saveNote(c)}
+                        >
+                          {rowBusy ? "…" : "Save note"}
+                        </button>
+                        <button
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2 py-1.5 text-xs"
+                          onClick={() => { setActRow(null); setNoteText(""); }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : act && act.kind === "follow" ? (
+                      <span className="flex flex-wrap items-center gap-1.5 ml-auto">
+                        <input
+                          type="datetime-local"
+                          className="input w-auto py-1.5 text-xs"
+                          aria-label={`Follow up with ${c.name} on`}
+                          value={followAt}
+                          onChange={(e) => setFollowAt(e.target.value)}
+                        />
+                        <button
+                          disabled={rowBusy || !followAt}
+                          className="btn bg-chip-600 text-white hover:bg-chip-700 px-3 py-1.5 text-xs"
+                          onClick={() => setFollowUp(c, new Date(followAt).toISOString())}
+                        >
+                          Set
+                        </button>
+                        {c.nextFollowUpAt && (
+                          <button
+                            disabled={rowBusy}
+                            className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+                            onClick={() => setFollowUp(c, null)}
+                          >
+                            Clear it
+                          </button>
+                        )}
+                        <button
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2 py-1.5 text-xs"
+                          onClick={() => { setActRow(null); setFollowAt(""); }}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : act && act.kind === "opening" ? (
+                      <span className="flex flex-wrap items-center gap-1.5 ml-auto">
+                        <select
+                          className="input w-auto max-w-[22rem] py-1.5 text-xs"
+                          aria-label={`Which opening ${c.name} is being called for`}
+                          value={c.requirementId || ""}
+                          onChange={(e) => setOpening(c, e.target.value)}
+                        >
+                          <option value="">No opening</option>
+                          {openList.map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.designation} — {o.clientName} · {o.location}
+                            </option>
+                          ))}
+                          {/* An opening that has since been closed is still the
+                              one this person is against. Leaving it out would
+                              make the picker show somebody else's opening as if
+                              it were theirs. */}
+                          {c.requirement && !openList.some((o) => o.id === c.requirement.id) && (
+                            <option value={c.requirement.id}>
+                              {c.requirement.designation} — {c.requirement.clientName} (closed)
+                            </option>
+                          )}
+                        </select>
+                        <button
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2 py-1.5 text-xs"
+                          onClick={() => setActRow(null)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="flex flex-wrap items-center gap-1.5 ml-auto">
+                        <button
+                          disabled={rowBusy || !c.lastCall}
+                          title={
+                            c.lastCall
+                              ? "Write a remark against the call just made."
+                              : "Log a call first — remarks are kept against the call."
+                          }
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+                          onClick={() => {
+                            setActRow({ id: c.id, kind: "note" });
+                            setNoteText(lastNote);
+                          }}
+                        >
+                          {lastNote ? "Edit note" : "Add note"}
+                        </button>
+                        <button
+                          disabled={rowBusy}
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+                          onClick={() => {
+                            setActRow({ id: c.id, kind: "follow" });
+                            setFollowAt(localInput(c.nextFollowUpAt) || tomorrowMorning());
+                          }}
+                        >
+                          {c.nextFollowUpAt ? "Change follow-up" : "Set follow-up"}
+                        </button>
+                        <button
+                          disabled={rowBusy}
+                          className="btn bg-white border border-slate-300 hover:bg-slate-50 px-2.5 py-1.5 text-xs"
+                          onClick={() => setActRow({ id: c.id, kind: "opening" })}
+                        >
+                          {c.requirement ? "Change opening" : "Pick opening"}
+                        </button>
+                      </span>
+                    )}
                   </div>
                 )}
 

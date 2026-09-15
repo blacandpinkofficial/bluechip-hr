@@ -135,9 +135,38 @@ export default function ImportPage() {
             does not matter — and the two columns both called &ldquo;PROCESS&rdquo;
             are kept apart by position.
           </p>
-          <button type="submit" className="btn-primary mt-4" disabled={!file || busy}>
-            {busy ? "Reading…" : "Read the file"}
-          </button>
+
+          <div className="flex flex-wrap items-center gap-2 mt-4">
+            <button type="submit" className="btn-primary" disabled={!file || busy}>
+              {busy ? "Reading…" : "Read the file"}
+            </button>
+            <a
+              className="btn-ghost"
+              href="/api/import/requirements?template=1"
+              download="sample-job-description-sheet.xlsx"
+            >
+              Download sample sheet
+            </a>
+          </div>
+
+          <div className="text-xs text-slate-500 mt-4 max-w-prose space-y-2">
+            <p>
+              <strong>Not sure what the sheet should look like?</strong> Download the sample.
+              It has four filled-in openings and the exact column names this screen
+              understands, so nothing you type into it gets left behind.
+            </p>
+            <p>
+              It keeps both &ldquo;PROCESS&rdquo; columns — the first for the channel
+              (voice, non voice, semi voice) and the second for the work itself. Keep
+              them both, in that order, and keep the title row above the headings.
+            </p>
+            <p>
+              <strong>Commercials:</strong> write a percentage with its sign
+              (&ldquo;8.33%&rdquo;) and a flat fee as rupees (&ldquo;10k&rdquo; or 8500).
+              A bare number between 100 and 1000 is flagged for you to set by hand
+              rather than guessed at.
+            </p>
+          </div>
         </form>
       )}
 

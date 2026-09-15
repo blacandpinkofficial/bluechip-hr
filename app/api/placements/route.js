@@ -9,7 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireCapability, can, ownScope } from "@/lib/auth";
+import { requireCapability, can } from "@/lib/auth";
 import { freezeTerms, resolveFee, replacementDeadline } from "@/lib/fees";
 import { parseRupees } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
@@ -17,6 +17,11 @@ import { istMonth, monthRange as istMonthRange } from "@/lib/day";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// The candidate pipeline, in order. Forwards only — see the guard in POST.
+// "dropped" is deliberately absent, which is why every index is checked against
+// -1 before it is compared.
+const ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined"];
 
 // One definition of a month, shared with payroll and invoicing. This file used
 // to build its own from the server's LOCAL calendar: on a UTC box, for the first
@@ -38,7 +43,23 @@ export async function GET(req) {
 
   const url = new URL(req.url);
   const { from, to, label } = monthRange(url.searchParams.get("month"));
-  const deskWide = can(gate.user.role, "revenue.read");
+
+  // Four separate questions, and they have four different answers. Running any
+  // two of them together is how the desk's money leaks.
+  //
+  //   deskRows    — whose placements may this person SEE AT ALL
+  //   deskRevenue — whose fees may this person see
+  //   ownRevenue  — may they see the fee on their own placements
+  //   showFees    — may they see the client's agreed RATE behind the fee
+  //
+  // A team_leader is the case that matters. They hold placement.read and
+  // report.desk, because running a team means seeing the team's work — but they
+  // hold neither revenue.read nor client.fees, because the desk's money is not
+  // theirs. Gate the money on report.desk (as this route used to) and every
+  // team leader is handed the whole month's revenue.
+  const deskRows = can(gate.user.role, "report.desk");
+  const deskRevenue = can(gate.user.role, "revenue.read");
+  const ownRevenue = can(gate.user.role, "revenue.own");
   // The frozen fee terms ARE the client's commercial rate — freezeTerms copies
   // them straight off the client or the requirement. client.fees is owner-only,
   // and /api/clients and /api/requirements both strip these correctly; this
@@ -48,10 +69,9 @@ export async function GET(req) {
   const rows = await prisma.placement.findMany({
     where: {
       selectedOn: { gte: from, lt: to },
-      // A recruiter sees their own placements and their own revenue. Desk-wide
-      // revenue is the number people leave over, so it is owner and manager
-      // only — and enforced here, not hidden in the UI.
-      ...(deskWide ? {} : ownScope(gate.user, "recruiterId")),
+      // A recruiter sees their own placements. The desk view is a manager's or
+      // a team leader's job — and it is a view of the WORK, not the money.
+      ...(deskRows ? {} : { recruiterId: gate.user.id }),
     },
     orderBy: [{ selectedOn: "desc" }],
     include: {
@@ -62,23 +82,45 @@ export async function GET(req) {
     },
   });
 
+  // Whose fee may this person see? Asked once, per row, and then used for the
+  // row, the totals and the by-recruiter bars alike, so the three can never
+  // disagree with each other.
+  const maySeeFee = (p) => deskRevenue || (ownRevenue && p.recruiterId === gate.user.id);
+
   // Joined is real; selected is a promise. Both are worth seeing, and
   // conflating them is how a month looks better than it was.
   const joined = rows.filter((p) => p.joinedOn && !p.droppedOn);
   const atRisk = rows.filter((p) => p.droppedOn);
+  const countable = joined.filter(maySeeFee);
 
   const byRecruiter = new Map();
-  for (const p of rows) {
-    const k = p.recruiter?.id || "—";
-    const e = byRecruiter.get(k) || { id: k, name: p.recruiter?.name || "Unassigned", selected: 0, joined: 0, revenue: 0 };
-    e.selected += 1;
-    if (p.joinedOn && !p.droppedOn) { e.joined += 1; e.revenue += p.revenue || 0; }
-    byRecruiter.set(k, e);
+  if (deskRevenue) {
+    for (const p of rows) {
+      const k = p.recruiter?.id || "—";
+      const e = byRecruiter.get(k) || { id: k, name: p.recruiter?.name || "Unassigned", selected: 0, joined: 0, revenue: 0 };
+      e.selected += 1;
+      if (p.joinedOn && !p.droppedOn) { e.joined += 1; e.revenue += p.revenue || 0; }
+      byRecruiter.set(k, e);
+    }
   }
 
   return NextResponse.json({
     month: label,
-    deskWide,
+    deskWide: deskRevenue,
+    showFees,
+    // What this person may do on the rows below, decided by capability here and
+    // never by a role string in the browser. The handlers refuse it regardless.
+    me: {
+      id: gate.user.id,
+      canWrite: can(gate.user.role, "placement.write"),
+      canInvoice: can(gate.user.role, "invoice.write"),
+      // Is there any money on this screen for this person at all? Not "does the
+      // role hold revenue.own" — every role holds that — but whether a single
+      // row in front of them is theirs. A team leader with no placements of
+      // their own gets no fee column and no invoice column, rather than two
+      // columns of dashes that invite someone to go looking.
+      canSeeMoney: deskRevenue || rows.some((p) => maySeeFee(p)),
+    },
     placements: rows.map((p) => ({
       id: p.id,
       candidate: p.candidate,
@@ -95,9 +137,22 @@ export async function GET(req) {
       ctcOfferedAnnual: p.ctcOfferedAnnual,
       takeHomeMonthly: p.takeHomeMonthly,
       ...(showFees ? { feeType: p.feeType, feeBps: p.feeBps, feeFlat: p.feeFlat } : {}),
-      revenue: p.revenue,
-      invoiceStatus: p.invoiceStatus,
-      invoiceNo: p.invoiceNo,
+      // Omitted entirely rather than zeroed. A 0 reads as "this one earned
+      // nothing", which is a different and untrue statement.
+      //
+      // The invoice travels with the fee, not with the placement. An invoice
+      // number and a "paid" chip say what the desk billed and collected just as
+      // plainly as the rupee figure does, so they are behind the same gate.
+      ...(maySeeFee(p)
+        ? {
+            maySeeFee: true,
+            revenue: p.revenue,
+            invoiceStatus: p.invoiceStatus,
+            invoiceNo: p.invoiceNo,
+            invoicedOn: p.invoicedOn,
+            paidOn: p.paidOn,
+          }
+        : { maySeeFee: false }),
       replacementUntil: p.replacementUntil,
       // Within the free-replacement window the fee is not safe yet.
       stillReplaceable:
@@ -107,11 +162,14 @@ export async function GET(req) {
       selected: rows.length,
       joined: joined.length,
       dropped: atRisk.length,
-      // Only joined, not-dropped placements count. Revenue on a selection that
-      // never turned up is a number that feels good and cannot be invoiced.
-      revenue: joined.reduce((n, p) => n + (p.revenue || 0), 0),
-      invoiced: joined.filter((p) => p.invoiceStatus !== "pending").reduce((n, p) => n + (p.revenue || 0), 0),
-      paid: joined.filter((p) => p.invoiceStatus === "paid").reduce((n, p) => n + (p.revenue || 0), 0),
+      // Only joined, not-dropped placements count, and only the ones whose fee
+      // this person is allowed to see. Revenue on a selection that never turned
+      // up is a number that feels good and cannot be invoiced; a total that
+      // quietly includes rows the reader may not see is a back door to the
+      // same figure.
+      revenue: countable.reduce((n, p) => n + (p.revenue || 0), 0),
+      invoiced: countable.filter((p) => p.invoiceStatus !== "pending").reduce((n, p) => n + (p.revenue || 0), 0),
+      paid: countable.filter((p) => p.invoiceStatus === "paid").reduce((n, p) => n + (p.revenue || 0), 0),
     },
     byRecruiter: [...byRecruiter.values()].sort((a, b) => b.revenue - a.revenue),
   });
@@ -209,10 +267,25 @@ export async function POST(req) {
         },
       });
 
-      await tx.candidate.update({
-        where: { id: candidateId },
-        data: { stage: joinedOn ? "joined" : "selected" },
-      });
+      // Move the candidate to match — forwards only. Writing the stage flat
+      // sent a candidate who had already joined somewhere back to "selected"
+      // the moment a second placement was recorded against them.
+      //
+      // The one deliberate exception is "dropped". It is not in ORDER, so it
+      // indexes to -1 and every other write in the app leaves it alone. Here it
+      // is lifted, because a placement is not a guess: somebody with
+      // placement.write has typed a CTC and a client against this person. A
+      // candidate written off after one rejection and then placed elsewhere
+      // must not stay marked dropped.
+      const target = joinedOn ? "joined" : "selected";
+      const at = ORDER.indexOf(candidate.stage);
+      const to = ORDER.indexOf(target);
+      if (candidate.stage === "dropped" || (at >= 0 && at < to)) {
+        await tx.candidate.update({
+          where: { id: candidateId },
+          data: { stage: target, archived: false },
+        });
+      }
 
       return p;
     });
@@ -229,7 +302,15 @@ export async function POST(req) {
       })
       .catch((e) => console.error("[placements] audit write failed:", e?.message));
 
-    return NextResponse.json({ placement: created }, { status: 201 });
+    // The created row carries `revenue` — the frozen fee. Strip it for anyone
+    // without revenue.read, or a team_leader who records a placement is told
+    // the fee in the confirmation toast, which is the same leak this route's
+    // GET was just fixed for.
+    const { revenue: _frozenFee, ...withoutFee } = created;
+    return NextResponse.json(
+      { placement: can(gate.user.role, "revenue.read") ? created : withoutFee },
+      { status: 201 }
+    );
   } catch (e) {
     // P2002 is the new unique constraint on (candidateId, requirementId) doing
     // its job: two clicks raced past the findFirst check above. That is not a

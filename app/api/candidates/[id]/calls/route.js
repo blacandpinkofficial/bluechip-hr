@@ -174,6 +174,77 @@ export async function POST(req, { params }) {
   }
 }
 
+/**
+ * PATCH — write the remark against the call that has just been made.
+ *
+ * The note a telecaller wants to leave arrives AFTER the outcome button has
+ * been pressed: they click "Connected" while the phone is still at their ear,
+ * and the useful sentence ("wants 22k, can join in a week, wife works in
+ * Sholinganallur") only forms once the call is over. Until now the only way to
+ * attach it was to log a second call, which is how a desk's call count stops
+ * meaning anything.
+ *
+ * So this edits the most recent call rather than creating one: no callCount
+ * increment, no lastContactedAt touch, and above all no stage write — a remark
+ * is not news about where the candidate has got to.
+ */
+export async function PATCH(req, { params }) {
+  const gate = await requireCapability("candidate.write");
+  if (!gate.ok) return gate.response;
+
+  try {
+    const candidateId = params?.id;
+    const b = await req.json().catch(() => ({}));
+    if (b.notes === undefined) {
+      return NextResponse.json({ error: "Nothing to save." }, { status: 400 });
+    }
+
+    const candidate = await prisma.candidate.findUnique({
+      where: { id: candidateId },
+      select: { id: true, ownerId: true },
+    });
+    if (!candidate) return NextResponse.json({ error: "No such candidate." }, { status: 404 });
+
+    // Same boundary as POST and GET above: a recruiter writes on their own
+    // candidates, the desk roles write on anyone's.
+    if (!can(gate.user.role, "report.desk") && candidate.ownerId && candidate.ownerId !== gate.user.id) {
+      return NextResponse.json(
+        { error: "This candidate belongs to another recruiter." },
+        { status: 403 }
+      );
+    }
+
+    // Scoped to the candidate either way, so a call id belonging to somebody
+    // else's candidate is simply not found rather than quietly edited.
+    const target = b.callId
+      ? await prisma.candidateCall.findFirst({
+          where: { id: String(b.callId), candidateId },
+        })
+      : await prisma.candidateCall.findFirst({
+          where: { candidateId },
+          orderBy: { calledAt: "desc" },
+        });
+
+    if (!target) {
+      return NextResponse.json(
+        { error: "There is no call to write this against yet — log the call first." },
+        { status: 409 }
+      );
+    }
+
+    const notes = String(b.notes || "").trim().slice(0, 2000);
+    const call = await prisma.candidateCall.update({
+      where: { id: target.id },
+      data: { notes: notes || null },
+    });
+
+    return NextResponse.json({ call });
+  } catch (e) {
+    console.error("[PATCH /api/candidates/[id]/calls]", e?.message || e);
+    return NextResponse.json({ error: "Could not save the note." }, { status: 500 });
+  }
+}
+
 export async function GET(req, { params }) {
   const gate = await requireCapability("candidate.read");
   if (!gate.ok) return gate.response;

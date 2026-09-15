@@ -17,6 +17,12 @@ import { useEffect, useState } from "react";
 // The five groups are the five jobs somebody actually sits down to do. "Today"
 // stays on its own at the front because it is the screen a recruiter opens
 // first and returns to all morning.
+//
+// "Today" now points at /dashboard. The dashboard and the old /reminders screen
+// were merged into one landing page, so there is exactly one entry for it here
+// rather than a "Today" and a "Dashboard" that both opened the same thing —
+// two names for one screen is how a menu stops being trusted. /reminders still
+// exists and redirects, so old bookmarks land in the right place.
 // Stored role value → what to show in the header. Deliberately a local copy
 // rather than an import from lib/auth.js: this is a client component, and
 // lib/auth.js pulls in prisma, bcryptjs and next/headers. Keep in step with
@@ -29,7 +35,7 @@ const ROLE_LABELS = {
 };
 
 const GROUPS = [
-  { label: "Today", href: "/reminders", cap: "candidate.read" },
+  { label: "Today", href: "/dashboard", cap: "candidate.read" },
   {
     label: "Pipeline",
     cap: "candidate.read",
@@ -67,7 +73,8 @@ const GROUPS = [
     label: "Desk",
     cap: null,
     items: [
-      { href: "/dashboard",    label: "Dashboard",    cap: null },
+      // No "Dashboard" entry: it is the "Today" link at the front of this bar.
+      // Settings below has no capability, so this group can never empty out.
       { href: "/reports",      label: "Reports",      cap: "report.own" },
       { href: "/knowledge",    label: "Knowledge",    cap: "candidate.read" },
       { href: "/training",     label: "Practice",     cap: "training.use" },

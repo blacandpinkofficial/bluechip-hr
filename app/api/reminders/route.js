@@ -5,6 +5,17 @@
 // a working tool into surveillance, and the first thing people do with a
 // surveillance tool is stop putting real dates in it. The desk-wide view of
 // whether work is happening already exists, in Reports.
+//
+// NOTHING IN THE APP CALLS THIS RIGHT NOW, and that is not an oversight. The
+// screen that used to — /reminders — was merged into /dashboard, which is a
+// server component: it reads the same rows through Prisma in the same round of
+// queries as everything else it shows, and closes one with a server action, so
+// the landing page needs no second request after it has painted. This endpoint
+// stays because it is the same list in a form something outside the browser can
+// ask for — a badge count, a phone, tomorrow's WhatsApp nudge — and because the
+// rule in it (your own reminders only, scoped by userId in the WHERE rather
+// than checked after loading) is worth keeping in one place for when that day
+// comes. Deleting it as dead code would only mean writing it again.
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability } from "@/lib/auth";
