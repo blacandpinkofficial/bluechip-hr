@@ -81,10 +81,61 @@ export async function GET(req) {
     },
   });
 
+  // Is there an actual interview behind "interview-scheduled"? Until now this
+  // screen could say an interview was scheduled while the Interviews screen sat
+  // empty, because the status was a string and nothing else. There is no
+  // submissionId column on Interview, so the two are matched on the (candidate,
+  // opening) pair — the same key the interviews route uses to find placements.
+  const interviewBy = new Map();
+  const canSeeInterviews = can(user.role, "interview.read");
+  if (rows.length > 0 && canSeeInterviews) {
+    const seen = new Set();
+    const pairs = [];
+    for (const r of rows) {
+      const k = `${r.candidateId}::${r.requirementId}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      pairs.push({ candidateId: r.candidateId, requirementId: r.requirementId });
+    }
+    const ivs = await prisma.interview
+      .findMany({
+        where: { OR: pairs },
+        // Latest round first, and within a round the latest booking. That is
+        // the one the desk is working towards; earlier rounds are history.
+        orderBy: [{ round: "desc" }, { scheduledAt: "desc" }],
+        take: 600,
+        select: {
+          id: true, candidateId: true, requirementId: true,
+          scheduledAt: true, mode: true, round: true,
+          interviewer: true, attended: true, outcome: true,
+        },
+      })
+      .catch((e) => {
+        console.error("[submissions] interview lookup failed:", e?.message);
+        return [];
+      });
+    for (const iv of ivs) {
+      const k = `${iv.candidateId}::${iv.requirementId}`;
+      if (interviewBy.has(k)) continue;
+      interviewBy.set(k, {
+        id: iv.id,
+        scheduledAt: iv.scheduledAt,
+        mode: iv.mode,
+        round: iv.round,
+        interviewer: iv.interviewer,
+        attended: iv.attended,
+        outcome: iv.outcome,
+      });
+    }
+  }
+
   const now = Date.now();
   const withAge = rows.map((r) => ({
     ...r,
     daysSilent: r.status === "sent" ? Math.floor((now - new Date(r.sentAt).getTime()) / 86400000) : null,
+    // Null is a real answer: no interview has been booked for this candidate on
+    // this opening.
+    interview: interviewBy.get(`${r.candidateId}::${r.requirementId}`) || null,
   }));
 
   return NextResponse.json({
@@ -94,6 +145,22 @@ export async function GET(req) {
     silent: withAge.filter((r) => r.status === "sent" && r.daysSilent >= 4).length,
     mailConfigured: mailReady(await getSettings()),
     me: user.id,
+    // What this person may actually do, decided here by capability and never by
+    // a role string in the browser. Booking the interview is a separate
+    // capability from recording the client's reply, and the screen must hide
+    // the button it would only be refused for.
+    canSeeInterviews,
+    // Both, because booking from here writes an Interview AND this Submission,
+    // and the handler that does it checks both. Showing a button for one of the
+    // two would be a button that is refused the moment it is pressed.
+    canScheduleInterview: can(user.role, "interview.write") && can(user.role, "candidate.write"),
+    // How many submissions claim an interview that does not exist. Zero is the
+    // healthy answer. Null, not zero, when this person cannot read interviews:
+    // the lookup above did not run, so the honest answer is "not known" rather
+    // than a reassuring number nobody computed.
+    scheduledWithoutInterview: canSeeInterviews
+      ? withAge.filter((r) => r.status === "interview-scheduled" && !r.interview).length
+      : null,
   });
 }
 
@@ -299,7 +366,30 @@ export async function PATCH(req) {
     if (candidate) movedTo = await advanceStage(candidate.id, candidate.stage, floor);
   }
 
-  return NextResponse.json({ submission: row, candidateStage: movedTo });
+  // Setting the status by hand is still allowed — someone correcting a week-old
+  // row should not be forced to invent a date and time. But the status on its
+  // own puts nothing on the Interviews screen and nothing on anyone's day
+  // sheet, so the screen is told, and it can offer to book the slot properly.
+  // Booking it is POST /api/interviews with this submission's id, which writes
+  // the interview, this status and the candidate's stage in one transaction.
+  let interview;
+  if (status === "interview-scheduled" && can(user.role, "interview.read")) {
+    interview = await prisma.interview
+      .findFirst({
+        where: { candidateId: row.candidateId, requirementId: row.requirementId },
+        orderBy: [{ round: "desc" }, { scheduledAt: "desc" }],
+        select: { id: true, scheduledAt: true, round: true, mode: true, outcome: true },
+      })
+      .catch(() => null);
+  }
+
+  return NextResponse.json({
+    submission: row,
+    candidateStage: movedTo,
+    ...(interview !== undefined
+      ? { interview: interview || null, interviewMissing: !interview }
+      : {}),
+  });
 }
 
 /**

@@ -195,6 +195,10 @@ export default function CandidateActions({ candidate, onDone }) {
                     requirementId: reqId,
                     scheduledAt: new Date(when).toISOString(),
                     mode,
+                    // Without this the duplicate guard is a dead end here: a
+                    // 409 sets confirmDup, the button re-posts the identical
+                    // body, and the same 409 comes back forever.
+                    confirmDuplicate: confirmDup,
                   });
                   if (j) setFlash(`Booked. ${candidate.name} moves to lined-up.`);
                 }}

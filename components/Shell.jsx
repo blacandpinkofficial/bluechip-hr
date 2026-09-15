@@ -51,6 +51,7 @@ const GROUPS = [
     cap: "requirement.read",
     items: [
       { href: "/requirements", label: "Requirements", cap: "requirement.read" },
+      { href: "/leads",        label: "Website leads", cap: "requirement.write" },
       { href: "/clients",      label: "Clients",      cap: "client.read" },
       { href: "/social",       label: "Post a job",   cap: "social.use" },
       { href: "/import",       label: "Import openings", cap: "import.run" },
@@ -76,6 +77,10 @@ const GROUPS = [
       // No "Dashboard" entry: it is the "Today" link at the front of this bar.
       // Settings below has no capability, so this group can never empty out.
       { href: "/reports",      label: "Reports",      cap: "report.own" },
+      // The evening sheet. Sits under Reports, not beside it: /reports is the
+      // trend and the funnel, this is one day read row by row. isOn() below
+      // keeps the longer path from lighting both entries up at once.
+      { href: "/reports/daily", label: "Daily report", cap: "report.own" },
       { href: "/knowledge",    label: "Knowledge",    cap: "candidate.read" },
       { href: "/training",     label: "Practice",     cap: "training.use" },
       { href: "/chat",         label: "Chat",         cap: "chat.use" },

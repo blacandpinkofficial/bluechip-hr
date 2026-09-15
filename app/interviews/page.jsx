@@ -55,6 +55,34 @@ const OUTCOME_BUTTONS = ["selected", "rejected", "on-hold"];
 
 const IDLE = "bg-white border-slate-300 text-slate-600 hover:bg-slate-50";
 
+// Where the submission that produced this interview stands. Full class strings,
+// one per status, for the same reason the outcome maps above are written out.
+const SUB_TONE = {
+  sent: "bg-slate-100 text-slate-700 border-slate-300",
+  acknowledged: "bg-sky-50 text-sky-800 border-sky-200",
+  shortlisted: "bg-violet-50 text-violet-800 border-violet-200",
+  "interview-scheduled": "bg-amber-50 text-amber-900 border-amber-200",
+  rejected: "bg-red-50 text-red-800 border-red-200",
+  "no-response": "bg-slate-100 text-slate-500 border-slate-300",
+};
+
+const SUB_LABEL = {
+  sent: "Sent",
+  acknowledged: "Acknowledged",
+  shortlisted: "Shortlisted",
+  "interview-scheduled": "Interview scheduled",
+  rejected: "Rejected",
+  "no-response": "No response",
+};
+
+function day(x) {
+  if (!x) return "";
+  const d = new Date(x);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
 function when(dt) {
   const d = new Date(dt);
   return d.toLocaleString("en-IN", {
@@ -304,10 +332,15 @@ export default function InterviewsPage() {
           <div className="text-chip-900 font-medium">
             {tab === "today" ? "Nothing scheduled today." : tab === "past" ? "No past interviews." : "Nothing scheduled yet."}
           </div>
-          <p className="text-sm text-slate-500 mt-1">
-            Interviews are booked from a candidate on the Calls screen.
+          <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">
+            Interviews are booked from a candidate on the Calls screen, or from the
+            submission the client replied to — whichever you are looking at when
+            they give you the slot.
           </p>
-          <a href="/candidates" className="btn-primary mt-4 inline-flex">Go to Calls</a>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <a href="/candidates" className="btn-primary inline-flex">Go to Calls</a>
+            <a href="/submissions" className="btn-ghost inline-flex">Go to Submissions</a>
+          </div>
         </div>
       ) : (
         <div className="card overflow-x-auto">
@@ -356,6 +389,33 @@ export default function InterviewsPage() {
                       <div className="text-xs text-slate-500">
                         {[i.requirement?.clientName, i.requirement?.location].filter(Boolean).join(" · ")}
                       </div>
+                      {/* The other half of the same event: the CV that got them
+                          here. Without it, nobody reading this row can tell
+                          whether the client ever received a CV, who sent it, or
+                          what the client wrote back. */}
+                      {i.submission ? (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          <span
+                            className={
+                              "rounded border px-1.5 py-0.5 text-[11px] " +
+                              (SUB_TONE[i.submission.status] || SUB_TONE.sent)
+                            }
+                          >
+                            {SUB_LABEL[i.submission.status] || i.submission.status}
+                          </span>
+                          <a
+                            href="/submissions"
+                            className="text-[11px] text-chip-700 underline hover:text-chip-800"
+                          >
+                            CV sent {day(i.submission.sentAt)}
+                            {i.submission.sentByName ? ` by ${i.submission.sentByName}` : ""}
+                          </a>
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          No CV submission recorded for this opening.
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <select

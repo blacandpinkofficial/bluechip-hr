@@ -19,7 +19,21 @@ import { NextResponse } from "next/server";
 // timer before the handler runs, and the timer's log says "401" — which reads
 // as a wrong secret, not a routing rule. The handler checks the secret itself,
 // in constant time; this line only gets the request as far as the handler.
-const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/jobs", "/api/public", "/api/cron"];
+// /careers is the public shopfront served at careers.blacandpink.com (and later
+// careers.bluechiphr.com). It is the same app behind the same tunnel, so the
+// only thing separating "the careers site" from "the office system" is this
+// list and the capability check inside every other handler. It is listed as a
+// prefix so /careers, /careers/jobs and /careers/jobs/<id> all pass; nothing
+// under /careers reads a session.
+const PUBLIC = [
+  "/login",
+  "/api/auth/login",
+  "/api/health",
+  "/jobs",
+  "/careers",
+  "/api/public",
+  "/api/cron",
+];
 
 export function middleware(req) {
   const { pathname } = req.nextUrl;

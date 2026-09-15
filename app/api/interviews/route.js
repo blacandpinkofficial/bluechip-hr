@@ -74,6 +74,47 @@ export async function GET(req) {
     ? rows
     : rows.filter((r) => !r.candidate?.ownerId || r.candidate.ownerId === gate.user.id);
 
+  // Where did this interview come from? An interview exists because a CV went
+  // to a client and the client said yes, and until now the two halves of that
+  // one event lived on two screens that could not see each other. There is no
+  // submissionId column on Interview, so the two are matched the only way the
+  // schema allows — the (candidate, opening) pair, exactly as the placement
+  // lookup below does. Read under candidate.read, because a submission carries
+  // who sent it and what the client wrote back.
+  const submissionBy = new Map();
+  if (visible.length > 0 && can(gate.user.role, "candidate.read")) {
+    const pairs = dedupePairs(visible);
+    const subs = await prisma.submission
+      .findMany({
+        where: { OR: pairs },
+        orderBy: { sentAt: "desc" },
+        take: 600,
+        select: {
+          id: true, candidateId: true, requirementId: true,
+          sentAt: true, status: true, method: true,
+          sentBy: { select: { name: true } },
+        },
+      })
+      .catch((e) => {
+        console.error("[interviews] submission lookup failed:", e?.message);
+        return [];
+      });
+    // Newest first, so the first one seen for a pair is the current one. A
+    // candidate genuinely re-sent to the same opening months later has two
+    // rows, and the interview belongs to the later of them.
+    for (const s of subs) {
+      const k = `${s.candidateId}::${s.requirementId}`;
+      if (submissionBy.has(k)) continue;
+      submissionBy.set(k, {
+        id: s.id,
+        sentAt: s.sentAt,
+        status: s.status,
+        method: s.method,
+        sentByName: s.sentBy?.name || null,
+      });
+    }
+  }
+
   // Has a selection already been turned into a placement? The screen needs to
   // know so it can offer the handover once and then stop offering it — there is
   // a unique constraint on (candidateId, requirementId), and a button that
@@ -83,10 +124,7 @@ export async function GET(req) {
   const placementBy = new Map();
   const selectedRows = visible.filter((i) => i.outcome === "selected");
   if (selectedRows.length > 0 && can(gate.user.role, "placement.read")) {
-    const pairs = selectedRows.map((i) => ({
-      candidateId: i.candidateId,
-      requirementId: i.requirementId,
-    }));
+    const pairs = dedupePairs(selectedRows);
     const placed = await prisma.placement
       .findMany({
         where: { OR: pairs },
@@ -139,6 +177,10 @@ export async function GET(req) {
         clientName: i.requirement.client?.name,
       },
       placement: placementBy.get(`${i.candidateId}::${i.requirementId}`) || null,
+      // The submission this interview came out of, if the CV went through the
+      // app. Null is a real answer — an interview can be booked off a phone
+      // call with no CV ever having been sent.
+      submission: submissionBy.get(`${i.candidateId}::${i.requirementId}`) || null,
     })),
     counts: {
       // "Direct Line ups scheduled" and "Telephonic scheduled" on the old
@@ -152,6 +194,24 @@ export async function GET(req) {
   });
 }
 
+/**
+ * body: { candidateId, requirementId, scheduledAt, mode, location, round,
+ *         interviewer, submissionId?, confirmDuplicate? }
+ *
+ * `submissionId` is what makes "the client said yes on the phone" one action
+ * instead of three. The interview row, the submission's status and the
+ * candidate's stage are the same event written in three places, and they are
+ * written inside one transaction so they cannot disagree. Before this, the
+ * submission screen could set the status string "interview-scheduled" and
+ * nothing appeared on the Interviews screen at all.
+ *
+ * This lives here, in the interviews route, and not in the submissions route,
+ * because everything that knows how to make a valid Interview already lives
+ * here — the mode list, the round cap, the ownership rule, the forwards-only
+ * stage mover. A second creator in the submissions route would be a second copy
+ * of all of it, drifting from the day it was written. The submissions screen
+ * calls this endpoint and passes the submission it is standing on.
+ */
 export async function POST(req) {
   const gate = await requireCapability("interview.write");
   if (!gate.ok) return gate.response;
@@ -173,6 +233,16 @@ export async function POST(req) {
       return NextResponse.json({ error: "Enter a valid date and time." }, { status: 400 });
     }
 
+    // The same cap PATCH enforces. It was missing here, so a fat-fingered "202"
+    // in the round box was refused on an edit and accepted on a booking.
+    const round = b.round === undefined || b.round === null || b.round === "" ? 1 : Number(b.round);
+    if (!Number.isFinite(round) || !Number.isInteger(round) || round < 1 || round > MAX_ROUND) {
+      return NextResponse.json(
+        { error: `The round must be a whole number between 1 and ${MAX_ROUND}.` },
+        { status: 400 }
+      );
+    }
+
     const [candidate, requirement] = await Promise.all([
       prisma.candidate.findUnique({ where: { id: candidateId } }),
       prisma.requirement.findUnique({ where: { id: requirementId } }),
@@ -185,9 +255,78 @@ export async function POST(req) {
       return NextResponse.json({ error: "That candidate belongs to someone else on the desk." }, { status: 403 });
     }
 
+    // ── the submission this is being booked from, if any ────────────────────
+    //
+    // Writing a Submission is a candidate.write act everywhere else in the app,
+    // and whose submission it is matters — the submissions route lets you touch
+    // your own or, with report.desk, the desk's. Both rules are enforced here
+    // rather than assumed, because this handler is reachable directly.
+    const submissionId = String(b.submissionId || "");
+    let submission = null;
+    if (submissionId) {
+      if (!can(gate.user.role, "candidate.write")) {
+        return NextResponse.json(
+          { error: "You can book the interview, but not update the submission." },
+          { status: 403 }
+        );
+      }
+      submission = await prisma.submission.findUnique({ where: { id: submissionId } });
+      if (!submission) {
+        return NextResponse.json({ error: "That submission no longer exists." }, { status: 404 });
+      }
+      if (submission.candidateId !== candidateId || submission.requirementId !== requirementId) {
+        return NextResponse.json(
+          { error: "That submission is for a different candidate or opening." },
+          { status: 400 }
+        );
+      }
+      if (submission.sentById !== gate.user.id && !can(gate.user.role, "report.desk")) {
+        return NextResponse.json({ error: "That is not your submission." }, { status: 403 });
+      }
+    }
+
+    // ── one interview per round, not two ────────────────────────────────────
+    //
+    // Two recruiters taking the same call, or one recruiter pressing the button
+    // twice, otherwise produces two rows for one panel: the counts double and
+    // the candidate appears on the day sheet twice. Answered rather than
+    // blocked — the caller is told what already exists and offered it, and a
+    // genuine re-booking of the same round can say so.
+    const siblings = await prisma.interview.findMany({
+      where: { candidateId, requirementId },
+      orderBy: { scheduledAt: "desc" },
+      take: 50,
+      select: { id: true, round: true, scheduledAt: true, mode: true, outcome: true, interviewer: true },
+    });
+    const clash = siblings.find((s) => (s.round || 1) === round);
+    if (clash && !b.confirmDuplicate) {
+      const maxRound = siblings.reduce((m, s) => Math.max(m, s.round || 1), 1);
+      return NextResponse.json(
+        {
+          // The time is deliberately NOT formatted into this sentence. This
+          // process runs in UTC, so a server-rendered "11:00" is half past four
+          // in the afternoon to the person reading it. The instant goes back in
+          // `existing` and the screen renders it against the reader's own clock.
+          error: `Round ${round} is already booked for ${candidate.name} on this opening. Open it, or book the next round instead.`,
+          needsConfirmation: true,
+          existing: {
+            id: clash.id,
+            round: clash.round || 1,
+            scheduledAt: clash.scheduledAt,
+            mode: clash.mode,
+            outcome: clash.outcome,
+            interviewer: clash.interviewer,
+          },
+          // What to offer instead of a second identical row.
+          nextRound: Math.min(maxRound + 1, MAX_ROUND),
+        },
+        { status: 409 }
+      );
+    }
+
     const mode = MODES.includes(b.mode) ? b.mode : "telephonic";
 
-    const created = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const iv = await tx.interview.create({
         data: {
           candidateId,
@@ -195,7 +334,7 @@ export async function POST(req) {
           scheduledAt: when,
           mode,
           location: String(b.location || "").trim() || requirement.location || null,
-          round: Number.isFinite(Number(b.round)) && Number(b.round) > 0 ? Math.round(Number(b.round)) : 1,
+          round,
           interviewer: String(b.interviewer || "").trim() || null,
           outcome: "pending",
           createdById: gate.user.id,
@@ -206,20 +345,33 @@ export async function POST(req) {
       // they weren't already — otherwise the candidate list shows someone with
       // an interview tomorrow and no role against their name.
       //
-      // Forwards only: someone already at "interviewed" or "selected" is not
-      // pulled back to lined-up because a second round was booked.
-      const at = ORDER.indexOf(candidate.stage);
-      const to = ORDER.indexOf("lined-up");
-      const moveUp = at >= 0 && at < to;
-      await tx.candidate.update({
-        where: { id: candidateId },
-        data: {
-          ...(moveUp ? { stage: "lined-up", archived: false } : {}),
-          ...(candidate.requirementId ? {} : { requirementId }),
-        },
-      });
+      // Forwards only, through the one stage mover in this file: someone
+      // already at "interviewed" or "selected" is not pulled back to lined-up
+      // because a second round was booked.
+      const movedTo = await advanceStage(tx, candidateId, candidate.stage, "lined-up");
+      if (!candidate.requirementId) {
+        await tx.candidate.update({ where: { id: candidateId }, data: { requirementId } });
+      }
 
-      return iv;
+      // The submission and the interview are the same event. Updated in the
+      // same transaction as the row above, so the Submissions screen can never
+      // claim an interview is scheduled while the Interviews screen has no
+      // record of it — which is precisely what it used to do.
+      let sub = null;
+      if (submission) {
+        sub = await tx.submission.update({
+          where: { id: submission.id },
+          data: {
+            status: "interview-scheduled",
+            // When the client responded, recorded once and never rewritten —
+            // the chase list is measured from it. Same rule as the submissions
+            // route's own PATCH.
+            ...(submission.respondedAt ? {} : { respondedAt: new Date() }),
+          },
+        });
+      }
+
+      return { interview: iv, submission: sub, movedTo, candidateStage: movedTo || candidate.stage };
     });
 
     await prisma.auditLog
@@ -228,17 +380,36 @@ export async function POST(req) {
           userId: gate.user.id,
           action: "create",
           entity: "Interview",
-          entityId: created.id,
-          summary: `${candidate.name} → ${requirement.designation} on ${when.toLocaleString("en-IN")} (${mode})`,
+          entityId: result.interview.id,
+          summary:
+            `${candidate.name} → ${requirement.designation} on ${when.toLocaleString("en-IN")} (${mode})` +
+            (submission ? " — from the submission" : ""),
         },
       })
       .catch((e) => console.error("[interviews] audit write failed:", e?.message));
 
-    return NextResponse.json({ interview: created }, { status: 201 });
+    return NextResponse.json(result, { status: 201 });
   } catch (e) {
     console.error("[POST /api/interviews]", e?.message || e);
     return NextResponse.json({ error: "Could not schedule the interview." }, { status: 500 });
   }
+}
+
+/**
+ * The distinct (candidate, opening) pairs in a list of interviews, as Prisma
+ * OR clauses. Two rounds of the same interview are two rows with one pair, and
+ * sending the pair twice makes the lookup do twice the work for the same answer.
+ */
+function dedupePairs(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows) {
+    const k = `${r.candidateId}::${r.requirementId}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ candidateId: r.candidateId, requirementId: r.requirementId });
+  }
+  return out;
 }
 
 /**

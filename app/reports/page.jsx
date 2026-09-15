@@ -6,6 +6,7 @@
 // whatever laptop the office has.
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import Shell from "@/components/Shell";
 
 function pct(r) { return r == null ? "—" : `${r}%`; }
@@ -134,7 +135,10 @@ export default function ReportsPage() {
       title="Reports"
       subtitle="Counted from the work itself — nothing on this page is typed in by anyone."
       actions={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-end">
+          <Link href="/reports/daily" className="btn-ghost text-sm whitespace-nowrap">
+            Daily report
+          </Link>
           {d?.deskWide && (
             <select id="who" className="input w-auto" value={user}
               onChange={(e) => setUser(e.target.value)} aria-label="Recruiter">
@@ -183,6 +187,16 @@ export default function ReportsPage() {
               This is the &ldquo;Daily productivity&rdquo; row from the old workbook. It is
               no longer typed by anyone.
             </p>
+            <Link
+              href="/reports/daily"
+              className="mt-3 block rounded border border-slate-200 px-3 py-2 text-sm text-chip-800 transition hover:border-chip-300 hover:bg-chip-50/40"
+            >
+              <b>Open the daily report</b>
+              <span className="text-slate-500">
+                {" "}— the same day broken out one row per telecaller, with yesterday and the
+                day before a click away. This is the other workbook, the one read every evening.
+              </span>
+            </Link>
           </div>
 
           <div className="grid lg:grid-cols-2 gap-4 mb-5">
