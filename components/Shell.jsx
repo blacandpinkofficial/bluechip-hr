@@ -17,6 +17,17 @@ import { useEffect, useState } from "react";
 // The five groups are the five jobs somebody actually sits down to do. "Today"
 // stays on its own at the front because it is the screen a recruiter opens
 // first and returns to all morning.
+// Stored role value → what to show in the header. Deliberately a local copy
+// rather than an import from lib/auth.js: this is a client component, and
+// lib/auth.js pulls in prisma, bcryptjs and next/headers. Keep in step with
+// ROLES there.
+const ROLE_LABELS = {
+  owner: "Owner",
+  manager: "Manager",
+  team_leader: "Team Leader",
+  recruiter: "Telecaller",
+};
+
 const GROUPS = [
   { label: "Today", href: "/reminders", cap: "candidate.read" },
   {
@@ -36,11 +47,14 @@ const GROUPS = [
       { href: "/requirements", label: "Requirements", cap: "requirement.read" },
       { href: "/clients",      label: "Clients",      cap: "client.read" },
       { href: "/social",       label: "Post a job",   cap: "social.use" },
-      { href: "/import",       label: "Import",       cap: "import.run" },
+      { href: "/import",       label: "Import openings", cap: "import.run" },
+      // A telecaller loads their own calling list; they do not import openings.
+      // Two entries, two capabilities — see the note on import.* in lib/auth.js.
+      { href: "/import/candidates", label: "Import candidates", cap: "import.candidates" },
     ],
   },
   {
-    label: "Money",
+    label: "Finance",
     cap: "payroll.own",
     items: [
       { href: "/invoices",     label: "Invoices",     cap: "revenue.read" },
@@ -119,7 +133,7 @@ export default function Shell({ children, title, subtitle, actions }) {
               {me?.user && (
                 <div className="text-right leading-tight hidden sm:block">
                   <div className="text-sm font-medium">{me.user.name}</div>
-                  <div className="text-[11px] text-slate-500 capitalize">{me.user.role}</div>
+                  <div className="text-[11px] text-slate-500">{ROLE_LABELS[me.user.role] || me.user.role}</div>
                 </div>
               )}
               <form action="/api/auth/logout" method="post">

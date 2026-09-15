@@ -37,7 +37,7 @@ model User {
   email        String    @unique
   phone        String?
   passwordHash String
-  role         String    @default("recruiter") // owner | manager | recruiter
+  role         String    @default("recruiter") // owner | manager | team_leader | recruiter
   active       Boolean   @default(true)
   lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())

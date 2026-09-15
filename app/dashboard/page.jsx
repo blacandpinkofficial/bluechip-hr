@@ -143,9 +143,9 @@ export default async function Dashboard() {
 
       {can(user.role, "revenue.read") && (
         <div className="card p-5 mt-6">
-          <div className="text-sm font-medium text-chip-900">Money</div>
+          <div className="text-sm font-medium text-chip-900">Finance</div>
           <p className="text-xs text-slate-500 mt-1 mb-3">
-            Only owners and managers see this.
+            Only owners and managers see this. Team leaders see the work, not the money.
           </p>
           <div className="flex flex-wrap gap-2">
             <a href="/placements" className="btn-ghost text-sm">Placements this month</a>

@@ -13,18 +13,62 @@
 // The match key is the phone number. A candidate already in the database is
 // UPDATED, never duplicated — two rows for one person means two recruiters
 // ringing them about the same job, which is how a client stops taking the call.
+//
+// A batch is imported AGAINST AN OPENING: a telecaller is handed a requirement
+// by their team leader and imports the list for it, so every row lands with
+// that requirementId and with the importer as owner. The one case that is never
+// decided automatically is a candidate already sitting against a DIFFERENT
+// opening — see commit() below.
+//
+// GET on this same path hands back the blank template to fill in.
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { requireCapability } from "@/lib/auth";
-import { parsePortalExport } from "@/lib/importCandidates";
+import {
+  parsePortalExport,
+  SAMPLE_CANDIDATE_TEMPLATE,
+  sampleTemplateAoa,
+} from "@/lib/importCandidates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// GET /api/import/candidates — the blank sheet to copy.
+//
+// Built here rather than served as a static file so that the headers in the
+// download are the headers the parser accepts, always: both come from
+// SAMPLE_CANDIDATE_TEMPLATE in lib/importCandidates.js. A stale template in
+// public/ is worse than none — it teaches column names that stopped working.
+export async function GET() {
+  const gate = await requireCapability("import.candidates");
+  if (!gate.ok) return gate.response;
+
+  try {
+    const ws = XLSX.utils.aoa_to_sheet(sampleTemplateAoa());
+    ws["!cols"] = SAMPLE_CANDIDATE_TEMPLATE.headers.map((h) => ({ wch: Math.max(16, h.length + 4) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, SAMPLE_CANDIDATE_TEMPLATE.sheetName);
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    return new NextResponse(buf, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Disposition": `attachment; filename="${SAMPLE_CANDIDATE_TEMPLATE.filename}"`,
+        "Content-Length": String(buf.length),
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (e) {
+    console.error("[GET /api/import/candidates]", e?.message || e);
+    return NextResponse.json({ error: "Could not build the sample file." }, { status: 500 });
+  }
+}
+
 export async function POST(req) {
-  const gate = await requireCapability("import.run");
+  const gate = await requireCapability("import.candidates");
   if (!gate.ok) return gate.response;
 
   const url = new URL(req.url);
@@ -46,6 +90,30 @@ async function preview(req) {
   const file = form.get("file");
   if (!file || typeof file.arrayBuffer !== "function") {
     return NextResponse.json({ error: "Choose a file first." }, { status: 400 });
+  }
+
+  // Which opening this batch is being called for. Optional — a general
+  // database top-up has no opening — but the screen asks for it first, because
+  // a hundred candidates with no opening attached cannot be screened and the
+  // call screen has nothing to pitch them.
+  const requirementId = String(form.get("requirementId") || "").trim() || null;
+  let requirement = null;
+  if (requirementId) {
+    const r = await prisma.requirement.findUnique({
+      where: { id: requirementId },
+      select: {
+        id: true, designation: true, location: true, status: true,
+        client: { select: { name: true } },
+      },
+    });
+    if (!r) return NextResponse.json({ error: "That opening does not exist." }, { status: 400 });
+    requirement = {
+      id: r.id,
+      designation: r.designation,
+      location: r.location,
+      status: r.status,
+      clientName: r.client?.name || null,
+    };
   }
 
   const buf = Buffer.from(await file.arrayBuffer());
@@ -72,19 +140,57 @@ async function preview(req) {
   const existing = phones.length
     ? await prisma.candidate.findMany({
         where: { phone: { in: phones } },
-        select: { id: true, phone: true, name: true, stage: true, owner: { select: { name: true } } },
+        select: {
+          id: true, phone: true, name: true, stage: true, requirementId: true,
+          owner: { select: { name: true } },
+          requirement: {
+            select: { id: true, designation: true, location: true, client: { select: { name: true } } },
+          },
+        },
       })
     : [];
   const known = new Map(existing.map((c) => [c.phone, c]));
 
   const rows = parsed.rows.map((r) => {
     const match = r.candidate.phone ? known.get(r.candidate.phone) : null;
+
+    // Four things can happen to a row, and the screen has to be able to say
+    // which before anything is written:
+    //   create   nobody on the books with this number
+    //   link     already here, against no opening — this batch gives them one
+    //   update   already here, against THIS opening — details filled in
+    //   conflict already here, against SOMEONE ELSE'S opening
+    // A conflict is never resolved silently. Moving a candidate off a live
+    // opening loses whoever was working them; leaving them is also a decision.
+    // So the row is shown, left unticked, and the person importing chooses.
+    let action = "skip";
+    if (r.usable) {
+      if (!match) action = "create";
+      else if (!requirementId) action = "update";
+      else if (!match.requirementId) action = "link";
+      else if (match.requirementId === requirementId) action = "update";
+      else action = "conflict";
+    }
+
     return {
       ...r,
       existing: match
-        ? { id: match.id, name: match.name, stage: match.stage, owner: match.owner?.name || null }
+        ? {
+            id: match.id,
+            name: match.name,
+            stage: match.stage,
+            owner: match.owner?.name || null,
+            requirementId: match.requirementId || null,
+            requirementLabel: match.requirement
+              ? [
+                  match.requirement.designation,
+                  match.requirement.client?.name,
+                  match.requirement.location,
+                ].filter(Boolean).join(" · ")
+              : null,
+          }
         : null,
-      action: !r.usable ? "skip" : match ? "update" : "create",
+      action,
     };
   });
 
@@ -93,11 +199,14 @@ async function preview(req) {
     sheetName,
     source: parsed.source,
     unmatchedHeaders: parsed.unmatched,
+    requirement,
     rows,
     summary: {
       ...parsed.summary,
       alreadyOnBooks: rows.filter((r) => r.existing).length,
       newPeople: rows.filter((r) => r.action === "create").length,
+      linked: rows.filter((r) => r.action === "link").length,
+      conflicts: rows.filter((r) => r.action === "conflict").length,
     },
   });
 }
@@ -107,10 +216,14 @@ async function commit(req, gate) {
   const rows = Array.isArray(body.rows) ? body.rows : [];
   const filename = String(body.filename || "export.xlsx");
   const requirementId = body.requirementId ? String(body.requirementId) : null;
-  // Unassigned by default. Auto-assigning a hundred imported candidates to
-  // whoever ran the import puts them all in one person's follow-up list, and
-  // nobody calls a list of a hundred.
-  const ownerId = body.ownerId ? String(body.ownerId) : null;
+  // A telecaller is handed an opening and imports the list for it, so the
+  // batch belongs to whoever ran the import — they are the one who will dial
+  // it. The screen can turn this off (assignToMe: false) when someone is
+  // topping the database up for the desk rather than for themselves, because a
+  // hundred candidates in one person's follow-up list is a list nobody calls.
+  const ownerId = body.assignToMe === false
+    ? (body.ownerId ? String(body.ownerId) : null)
+    : gate.user.id;
 
   if (!rows.length) return NextResponse.json({ error: "No rows to import." }, { status: 400 });
 
@@ -121,6 +234,9 @@ async function commit(req, gate) {
 
   let created = 0;
   let updated = 0;
+  let linked = 0;
+  let moved = 0;
+  let keptOnTheirOpening = 0;
   const errors = [];
 
   for (const r of rows) {
@@ -135,6 +251,33 @@ async function commit(req, gate) {
       const existing = await prisma.candidate.findUnique({ where: { phone } });
 
       if (existing) {
+        // What happens to the opening this person is already against:
+        //
+        //   no opening yet        → linked to this batch's opening
+        //   the same opening      → nothing to change
+        //   a DIFFERENT opening   → LEFT WHERE IT IS, unless the person
+        //                           importing ticked "move to this opening" on
+        //                           that row in the preview.
+        //
+        // Silently re-pointing a candidate at a new opening loses the work
+        // whoever had them was doing — their screening, their pitch, their
+        // interview slot — and the first anyone knows of it is a client asking
+        // why a CV was sent twice for two different roles.
+        let nextRequirementId = existing.requirementId;
+        if (requirementId) {
+          if (!existing.requirementId) {
+            nextRequirementId = requirementId;
+            linked += 1;
+          } else if (existing.requirementId === requirementId) {
+            nextRequirementId = requirementId;
+          } else if (r.moveRequirement === true) {
+            nextRequirementId = requirementId;
+            moved += 1;
+          } else {
+            keptOnTheirOpening += 1;
+          }
+        }
+
         // Fill gaps; never overwrite. Someone on this desk spoke to this person
         // and typed what they learned — a portal profile last touched eight
         // months ago must not flatten that.
@@ -149,9 +292,11 @@ async function commit(req, gate) {
             skills: existing.skills || c.skills || null,
             education: existing.education || c.education || null,
             altPhone: existing.altPhone || c.altPhone || null,
-            // The requirement IS updated: re-importing against a new opening is
-            // usually the reason someone is importing them again.
-            requirementId: requirementId || existing.requirementId,
+            requirementId: nextRequirementId,
+            // An unowned candidate is claimed by whoever imported them, the
+            // same way logging a call claims one. Somebody else's candidate is
+            // never taken off them by an import.
+            ownerId: existing.ownerId || ownerId,
           },
         });
         updated += 1;
@@ -179,8 +324,16 @@ async function commit(req, gate) {
       }
     } catch (e) {
       // The unique constraint on phone is the likely one, if two approved rows
-      // carry the same number. Reported per row, not fatal for the batch.
-      errors.push({ row: r?.sourceRow, error: e?.message || "Could not save this row." });
+      // carry the same number — or if someone else added this person between
+      // the preview and the Import button. Reported per row, in words, and
+      // never swallowed: a row that did not save must say so.
+      const dupe = e?.code === "P2002";
+      errors.push({
+        row: r?.sourceRow,
+        error: dupe
+          ? `${phone} is already on the books — that number appears twice in this file, or someone added them while you were looking at the preview.`
+          : e?.message || "Could not save this row.",
+      });
     }
   }
 
@@ -200,10 +353,19 @@ async function commit(req, gate) {
     batchId: batch.id,
     created,
     updated,
+    linked,
+    moved,
+    keptOnTheirOpening,
+    requirementId,
     failed: errors.length,
     errors: errors.slice(0, 50),
     message:
       `${created} new ${created === 1 ? "candidate" : "candidates"}, ${updated} updated` +
+      (linked ? `, ${linked} linked to this opening` : "") +
+      (moved ? `, ${moved} moved across` : "") +
+      (keptOnTheirOpening
+        ? `, ${keptOnTheirOpening} left on the opening they were already against`
+        : "") +
       (errors.length ? `, ${errors.length} could not be saved.` : "."),
   });
 }

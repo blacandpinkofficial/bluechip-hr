@@ -44,6 +44,10 @@ export async function GET(req) {
   });
 
   const showFees = can(gate.user.role, "client.fees");
+  // The screen needs to know whether to offer the row actions at all. A
+  // recruiter can read this list but must not be shown an Edit button that
+  // would only ever come back 403.
+  const showWrite = can(gate.user.role, "requirement.write");
 
   return NextResponse.json({
     requirements: rows.map((r) => {
@@ -68,10 +72,12 @@ export async function GET(req) {
         educationMin: r.educationMin,
         docsRequired: r.docsRequired,
         cabFacility: r.cabFacility,
+        notes: r.notes,
         status: r.status,
         priority: r.priority,
         publishOnline: r.publishOnline,
         openedAt: r.openedAt,
+        closedAt: r.closedAt,
         candidateCount: r._count.candidates,
         interviewCount: r._count.interviews,
         placedCount: r._count.placements,
@@ -85,6 +91,7 @@ export async function GET(req) {
       };
     }),
     canSeeFees: showFees,
+    canWrite: showWrite,
   });
 }
 

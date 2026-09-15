@@ -9,6 +9,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STATUSES = ["open", "hold", "filled", "closed"];
+const PRIORITIES = ["low", "normal", "high"];
+
+// The two statuses that mean the opening is finished. "hold" is not one of
+// them — a paused requirement is still live work, and stamping it with a
+// closing date made the reports count it as a closed role that had never
+// closed.
+const CLOSING = ["filled", "closed"];
 
 export async function PATCH(req, { params }) {
   const gate = await requireCapability("requirement.write");
@@ -47,13 +54,27 @@ export async function PATCH(req, { params }) {
       data.cabFacility = b.cabFacility;
     }
 
+    if (b.priority !== undefined) {
+      if (!PRIORITIES.includes(b.priority)) {
+        return NextResponse.json({ error: `Unknown priority "${b.priority}".` }, { status: 400 });
+      }
+      data.priority = b.priority;
+    }
+
     if (b.status !== undefined) {
       if (!STATUSES.includes(b.status)) {
         return NextResponse.json({ error: `Unknown status "${b.status}".` }, { status: 400 });
       }
       data.status = b.status;
-      if (b.status !== "open" && !existing.closedAt) data.closedAt = new Date();
-      if (b.status === "open") data.closedAt = null;
+      // Filled and closed stamp the closing date, once — re-closing a role that
+      // was reopened should not rewrite the date it first closed unless it has
+      // genuinely been cleared in between. Open and hold clear it, because
+      // neither of them is a closed opening.
+      if (CLOSING.includes(b.status)) {
+        if (!existing.closedAt) data.closedAt = new Date();
+      } else {
+        data.closedAt = null;
+      }
       // An opening that is no longer open must leave the careers page with it.
       // Otherwise a filled role keeps collecting applications that nobody wants
       // and candidates get called about a job that does not exist.
@@ -90,6 +111,17 @@ export async function PATCH(req, { params }) {
     }
 
     const updated = await prisma.requirement.update({ where: { id }, data });
+
+    if (data.status !== undefined && data.status !== existing.status) {
+      await prisma.auditLog
+        .create({
+          data: {
+            userId: gate.user.id, action: "update", entity: "Requirement", entityId: id,
+            summary: `${existing.designation}: ${existing.status} to ${data.status}`,
+          },
+        })
+        .catch((e) => console.error("[requirement patch] audit write failed:", e?.message));
+    }
 
     if (data.publishOnline !== undefined && data.publishOnline !== existing.publishOnline) {
       await prisma.auditLog

@@ -4,8 +4,14 @@
 // The column that earns this screen its place is "days silent". Everything else
 // here could be reconstructed from someone's sent folder; that one could not,
 // and it is the one that turns "I sent it last week" into "chase this today".
+//
+// Recording the client's reply is the one action this screen exists for, so it
+// is one click on the row. The client says "we'll interview him" on the phone;
+// by the time the recruiter has opened a form, chosen a status and saved, they
+// have stopped doing it. The note and the full status list stay one click
+// further in, inline under the row, for the times the reply needs words.
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 
 const TONE = {
@@ -17,8 +23,55 @@ const TONE = {
   "no-response": "bg-slate-100 text-slate-500 border-slate-300",
 };
 
+// The ladder a submission climbs when things are going well. One step at a
+// time, because that is how the client actually replies.
+const NEXT = {
+  sent: "acknowledged",
+  acknowledged: "shortlisted",
+  shortlisted: "interview-scheduled",
+};
+
+const LABEL = {
+  sent: "Sent",
+  acknowledged: "Acknowledged",
+  shortlisted: "Shortlisted",
+  "interview-scheduled": "Interview scheduled",
+  rejected: "Rejected",
+  "no-response": "No response",
+};
+
+// What each move says about the candidate, mirrored from the server so the
+// confirmation can name it. The server is the authority; this is only wording.
+const STAGE_NOTE = {
+  shortlisted: "shortlisted",
+  "interview-scheduled": "lined-up",
+};
+
 function dt(x) {
   return x ? new Date(x).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "—";
+}
+
+/** The small square-shouldered button every row action is made of. */
+function RowButton({ children, onClick, disabled, title, tone = "plain" }) {
+  const tones = {
+    plain: "bg-white text-slate-600 border-slate-300 hover:bg-slate-50 hover:text-chip-700",
+    go: "bg-chip-50 text-chip-800 border-chip-300 hover:bg-chip-100",
+    stop: "bg-white text-red-700 border-red-200 hover:bg-red-50",
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={
+        "text-[11px] px-2 py-0.5 rounded border transition disabled:opacity-40 disabled:cursor-not-allowed " +
+        tones[tone]
+      }
+    >
+      {children}
+    </button>
+  );
 }
 
 export default function SubmissionsPage() {
@@ -31,29 +84,47 @@ export default function SubmissionsPage() {
   const [flash, setFlash] = useState("");
   useEffect(() => {
     if (!flash) return;
-    const t = setTimeout(() => setFlash(""), 2500);
+    const t = setTimeout(() => setFlash(""), 3000);
     return () => clearTimeout(t);
   }, [flash]);
   const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState({ status: "", response: "" });
+  const [busyId, setBusyId] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await fetch(`/api/submissions${filter ? `?status=${filter}` : ""}`);
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Could not load submissions.");
-      setData(j);
-      setError("");
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [filter]);
+  // `quiet` refreshes without blanking the table. A one-click action that
+  // replaces the list with "Loading…" reads as the page breaking.
+  const load = useCallback(
+    async (quiet) => {
+      if (!quiet) setLoading(true);
+      try {
+        const r = await fetch(`/api/submissions${filter ? `?status=${filter}` : ""}`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "Could not load submissions.");
+        setData(j);
+        setError("");
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [filter]
+  );
 
   useEffect(() => { load(); }, [load]);
 
-  async function update(id, body) {
+  async function update(id, body, { close = false, name = "" } = {}) {
+    setBusyId(id);
+    setError("");
+    // Optimistic, so the row changes under the cursor rather than after a
+    // round trip. The reload below is what makes it true.
+    setData((d) => {
+      if (!d || !Array.isArray(d.submissions)) return d;
+      return {
+        ...d,
+        submissions: d.submissions.map((s) => (s.id === id ? { ...s, ...body } : s)),
+      };
+    });
     try {
       const r = await fetch("/api/submissions", {
         method: "PATCH",
@@ -62,13 +133,29 @@ export default function SubmissionsPage() {
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "That did not save.");
-      setEditing(null);
-      setFlash("Saved.");
-      load();
+      if (close) setEditing(null);
+      // Say when the candidate moved too. The recruiter did not ask for it and
+      // would otherwise find out days later on another screen.
+      setFlash(
+        j.candidateStage
+          ? `Saved. ${name || "The candidate"} is now at ${j.candidateStage}.`
+          : "Saved."
+      );
     } catch (e) {
       setError(e.message);
+    } finally {
+      setBusyId("");
+      load(true);
     }
   }
+
+  function openEditor(s) {
+    setEditing(s.id);
+    setDraft({ status: s.status, response: s.response || "" });
+  }
+
+  const statuses = data && Array.isArray(data.statuses) ? data.statuses : [];
+  const submissions = data && Array.isArray(data.submissions) ? data.submissions : [];
 
   return (
     <Shell
@@ -77,7 +164,7 @@ export default function SubmissionsPage() {
       actions={
         <select aria-label="Filter by status" className="input max-w-[13rem]" value={filter} onChange={(e) => setFilter(e.target.value)}>
           <option value="">All</option>
-          {(data?.statuses || []).map((s) => <option key={s} value={s}>{s}</option>)}
+          {statuses.map((s) => <option key={s} value={s}>{LABEL[s] || s}</option>)}
         </select>
       }
     >
@@ -105,7 +192,7 @@ export default function SubmissionsPage() {
           be showing at that moment. */}
       {loading ? (
         <div className="card p-10 text-center text-slate-400">Loading…</div>
-      ) : !data ? null : data.submissions.length === 0 ? (
+      ) : !data ? null : submissions.length === 0 ? (
         <div className="card p-10 text-center">
           <div className="text-chip-900 font-medium">Nothing sent yet.</div>
           <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">
@@ -115,7 +202,7 @@ export default function SubmissionsPage() {
         </div>
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full text-sm min-w-[820px]">
+          <table className="w-full text-sm min-w-[980px]">
             <thead className="bg-slate-50 text-left text-slate-500">
               <tr>
                 <th className="p-3 font-medium">Candidate</th>
@@ -123,54 +210,148 @@ export default function SubmissionsPage() {
                 <th className="p-3 font-medium">For</th>
                 <th className="p-3 font-medium">Sent</th>
                 <th className="p-3 font-medium text-right">Silent</th>
-                <th className="p-3 font-medium">Status</th>
+                <th className="p-3 font-medium">Where it stands</th>
                 <th className="p-3 font-medium">By</th>
                 <th className="p-3" />
               </tr>
             </thead>
             <tbody>
-              {data.submissions.map((s) => (
-                <tr key={s.id} className="border-t border-slate-100">
-                  <td className="p-3">
-                    <div className="font-medium text-chip-900">{s.candidate?.name}</div>
-                    <div className="text-xs text-slate-500">{s.candidate?.phone}</div>
-                  </td>
-                  <td className="p-3">{s.client?.name}</td>
-                  <td className="p-3 text-slate-600">{s.requirement?.designation}</td>
-                  <td className="p-3 text-slate-500">{dt(s.sentAt)}</td>
-                  <td className="p-3 text-right tabular-nums">
-                    {s.daysSilent == null ? (
-                      <span className="text-slate-300">—</span>
-                    ) : (
-                      <span className={s.daysSilent >= 4 ? "text-amber-800 font-medium" : "text-slate-500"}>
-                        {s.daysSilent}d
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    {editing === s.id ? (
-                      <select
-                        className="input text-xs py-1"
-                        defaultValue={s.status}
-                        onChange={(e) => update(s.id, { status: e.target.value })}
+              {submissions.map((s) => {
+                const next = NEXT[s.status];
+                const busy = busyId === s.id;
+                const name = s.candidate?.name || "";
+                return (
+                  <Fragment key={s.id}>
+                  <tr className={"border-t border-slate-100 align-top " + (busy ? "opacity-50" : "")}>
+                    <td className="p-3">
+                      <div className="font-medium text-chip-900">{name}</div>
+                      <div className="text-xs text-slate-500">{s.candidate?.phone}</div>
+                    </td>
+                    <td className="p-3">{s.client?.name}</td>
+                    <td className="p-3 text-slate-600">{s.requirement?.designation}</td>
+                    <td className="p-3 text-slate-500 whitespace-nowrap">{dt(s.sentAt)}</td>
+                    <td className="p-3 text-right tabular-nums">
+                      {s.daysSilent == null ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        <span className={s.daysSilent >= 4 ? "text-amber-800 font-medium" : "text-slate-500"}>
+                          {s.daysSilent}d
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      {/* Status, and the replies that can come next. No dialog:
+                          the client said it on the phone, this records it
+                          before they have hung up. */}
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={"text-[11px] px-2 py-0.5 rounded border " + (TONE[s.status] || TONE.sent)}>
+                          {LABEL[s.status] || s.status}
+                        </span>
+                        {next && (
+                          <RowButton
+                            tone="go"
+                            disabled={busy}
+                            onClick={() => update(s.id, { status: next }, { name })}
+                            title={
+                              STAGE_NOTE[next]
+                                ? `Record this reply, and move ${name || "the candidate"} to ${STAGE_NOTE[next]}`
+                                : "Record this reply"
+                            }
+                          >
+                            {LABEL[next]}
+                          </RowButton>
+                        )}
+                        {s.status !== "rejected" && (
+                          <RowButton
+                            tone="stop"
+                            disabled={busy}
+                            onClick={() => update(s.id, { status: "rejected" }, { name })}
+                            title="The client passed on this candidate for this opening"
+                          >
+                            Rejected
+                          </RowButton>
+                        )}
+                        {s.status === "sent" && (
+                          <RowButton
+                            disabled={busy}
+                            onClick={() => update(s.id, { status: "no-response" }, { name })}
+                            title="Chased and got nothing back"
+                          >
+                            No reply
+                          </RowButton>
+                        )}
+                      </div>
+                      {s.respondedAt && (
+                        <div className="text-[11px] text-slate-400 mt-1">Replied {dt(s.respondedAt)}</div>
+                      )}
+                      {s.response && (
+                        <div className="text-xs text-slate-500 mt-1 max-w-xs">{s.response}</div>
+                      )}
+                    </td>
+                    <td className="p-3 text-slate-500">{s.sentBy?.name}</td>
+                    <td className="p-3 text-right">
+                      <button
+                        type="button"
+                        className="text-xs text-slate-400 hover:text-chip-700"
+                        onClick={() => (editing === s.id ? setEditing(null) : openEditor(s))}
                       >
-                        {data.statuses.map((x) => <option key={x} value={x}>{x}</option>)}
-                      </select>
-                    ) : (
-                      <span className={"text-[11px] px-2 py-0.5 rounded border " + (TONE[s.status] || TONE.sent)}>
-                        {s.status}
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-3 text-slate-500">{s.sentBy?.name}</td>
-                  <td className="p-3 text-right">
-                    <button className="text-xs text-slate-400 hover:text-chip-700"
-                      onClick={() => setEditing(editing === s.id ? null : s.id)}>
-                      {editing === s.id ? "Close" : "Update"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                        {editing === s.id ? "Close" : s.response ? "Edit note" : "Add note"}
+                      </button>
+                    </td>
+                  </tr>
+
+                  {editing === s.id && (
+                    <tr className="border-t border-slate-100 bg-slate-50/70">
+                      <td colSpan={8} className="p-3">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="w-52">
+                            <label className="label" htmlFor={`st-${s.id}`}>Status</label>
+                            <select
+                              id={`st-${s.id}`}
+                              className="input"
+                              value={draft.status}
+                              onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))}
+                            >
+                              {statuses.map((x) => (
+                                <option key={x} value={x}>{LABEL[x] || x}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex-1 min-w-[16rem]">
+                            <label className="label" htmlFor={`rs-${s.id}`}>What the client said</label>
+                            <input
+                              id={`rs-${s.id}`}
+                              className="input"
+                              placeholder="Interview Thursday 11am, ask him to carry the relieving letter"
+                              value={draft.response}
+                              onChange={(e) => setDraft((d) => ({ ...d, response: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  update(s.id, { status: draft.status, response: draft.response }, { close: true, name });
+                                }
+                              }}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={busy}
+                            onClick={() =>
+                              update(s.id, { status: draft.status, response: draft.response }, { close: true, name })
+                            }
+                          >
+                            Save
+                          </button>
+                          <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -179,7 +360,9 @@ export default function SubmissionsPage() {
       <p className="text-xs text-slate-500 mt-4 max-w-prose">
         Record what the client said as soon as they say it. A submission left on
         &ldquo;sent&rdquo; keeps appearing in your list as unanswered, and one that is really
-        rejected crowds out the ones still worth chasing.
+        rejected crowds out the ones still worth chasing. Marking one shortlisted or
+        interview-scheduled also moves the candidate along on their own screen, so the
+        two never disagree.
       </p>
     </Shell>
   );

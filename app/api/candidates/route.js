@@ -34,6 +34,14 @@ const QUEUES = {
       { lastContactedAt: null },
     ],
   }),
+  // Everyone who has left the working list: not interested, or put aside. This
+  // is a DESTINATION, not a bin. Nothing is ever deleted — the calls, the
+  // notes, the number are all still here, because "we spoke to him in March
+  // and he wanted 25k" is exactly what you need when the next opening lands,
+  // and because a candidate who says no to one process says yes to another.
+  history: () => ({
+    OR: [{ archived: true }, { stage: "dropped" }],
+  }),
 };
 
 export async function GET(req) {
@@ -49,6 +57,7 @@ export async function GET(req) {
   const now = new Date();
 
   const queueWhere = (QUEUES[queue] || QUEUES.all)(now);
+  const isHistory = queue === "history";
 
   // Built as an AND list rather than one spread object. Both the "cold" queue
   // and the search use a top-level OR, and spreading them into the same object
@@ -56,7 +65,14 @@ export async function GET(req) {
   // instead of narrowing it, and nothing would look broken.
   const where = {
     AND: [
-      { archived: false },
+      // Two ways out of the working list, and both lead to the same place:
+      // archived (put aside by hand or by a "not now") and dropped (said no on
+      // a call). Everywhere except History, both are hidden — a recruiter
+      // working a queue should not be reading past the people they already
+      // finished with. An explicit ?stage= is honoured as asked, so a report
+      // or a link can still ask for the dropped ones by name.
+      isHistory ? {} : { archived: false },
+      isHistory || stage ? {} : { stage: { not: "dropped" } },
       queueWhere,
       stage ? { stage } : {},
       requirementId ? { requirementId } : {},
@@ -80,6 +96,9 @@ export async function GET(req) {
     orderBy:
       queue === "due" ? [{ lastContactedAt: "asc" }]
       : queue === "cold" ? [{ lastContactedAt: "asc" }]
+      // History reads newest-first: the person you set aside this morning is
+      // the one you are most likely to be looking for.
+      : isHistory ? [{ lastContactedAt: "desc" }]
       : [{ createdAt: "desc" }],
     take: 200,
     include: {
@@ -118,6 +137,7 @@ export async function GET(req) {
         stage: c.stage,
         status: c.status,
         rating: c.rating,
+        archived: c.archived,
         hasRelieving: c.hasRelieving,
         hasArrears: c.hasArrears,
         education: c.education,

@@ -9,6 +9,19 @@
 // last-contacted, bump the counter — because a call that logs but doesn't move
 // the candidate out of the "never called" queue means the next recruiter dials
 // them again ten minutes later.
+//
+// It is also the ONLY write behind the one-click buttons on the call list, so
+// that a whole outcome is one round trip while somebody is still on the phone:
+//
+//   { outcome }                       log it, infer the obvious stage move
+//   { outcome: "connected", advance } log it and move them to the next stage
+//   { outcome, archive: true|false }  log it and move them into, or out of,
+//                                     History — which is a filter, never a
+//                                     delete; every call stays on the record.
+//
+// There is deliberately no second endpoint for "advance the stage": two writes
+// means one of them can fail, and the one that fails is always the one that
+// matters.
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -23,6 +36,21 @@ const OUTCOMES = ["connected", "no-answer", "busy", "wrong-number", "not-interes
 // hasn't been set by hand. Only ever moves forward: a no-answer on someone
 // already lined up must not drag them back to "contacted".
 const STAGE_ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined", "dropped"];
+
+// "Ready for next" on the call list: one button that says the candidate is
+// interested and clears whatever the last step was, so they move on without
+// anybody opening a form. Where "on" is depends on where they are now.
+//
+// It stops at interviewed on purpose. Selected and joined are money, and they
+// are recorded through Placements where the offer and the joining date are
+// captured; a telecaller must not be able to mark someone placed with one
+// click on a list.
+const ADVANCE_NEXT = {
+  new: "shortlisted",
+  contacted: "shortlisted",
+  shortlisted: "lined-up",
+  "lined-up": "interviewed",
+};
 
 export async function POST(req, { params }) {
   const gate = await requireCapability("candidate.write");
@@ -74,6 +102,37 @@ export async function POST(req, { params }) {
       // like "selected" just because someone logged a stray call.
       !(implied === "dropped" && ["selected", "joined"].includes(candidate.stage));
 
+    // The call list's "Ready for next" button. Asked for explicitly by the
+    // caller rather than guessed from the outcome, because "we spoke" and "they
+    // are good for the next step" are two different pieces of news and only the
+    // recruiter knows the second. Requires a connected call: you cannot move
+    // somebody on from a ringing phone.
+    let nextStage = shouldAdvance ? implied : null;
+    if (b.advance === true) {
+      if (outcome !== "connected") {
+        return NextResponse.json(
+          { error: "Only a connected call can move someone on." },
+          { status: 400 }
+        );
+      }
+      // Missing from the map means there is nowhere sensible left to go —
+      // interviewed, selected, joined, dropped. Those move through Interviews
+      // and Placements, not from here.
+      nextStage = ADVANCE_NEXT[candidate.stage] || nextStage;
+    }
+
+    // Leaving the working list is not deletion. An archived candidate keeps
+    // every call, note and callback ever logged and sits in History, one click
+    // from being brought back.
+    let archived;
+    if (typeof b.archive === "boolean") {
+      archived = b.archive;
+    } else if (nextStage === "dropped") {
+      // Not interested means not now. They come off the list the recruiter is
+      // working, and stay on the books.
+      archived = true;
+    }
+
     const [call] = await prisma.$transaction([
       prisma.candidateCall.create({
         data: {
@@ -93,14 +152,22 @@ export async function POST(req, { params }) {
           // the half that matters: without it, making the callback leaves the
           // candidate sitting in the "due" queue permanently.
           nextFollowUpAt: followUpAt,
-          ...(shouldAdvance ? { stage: implied } : {}),
+          ...(nextStage && nextStage !== candidate.stage ? { stage: nextStage } : {}),
+          ...(archived === undefined ? {} : { archived }),
           // Claim an unowned candidate for whoever actually did the work.
           ...(candidate.ownerId ? {} : { ownerId: gate.user.id }),
         },
       }),
     ]);
 
-    return NextResponse.json({ call, stage: shouldAdvance ? implied : candidate.stage }, { status: 201 });
+    return NextResponse.json(
+      {
+        call,
+        stage: nextStage || candidate.stage,
+        archived: archived === undefined ? candidate.archived : archived,
+      },
+      { status: 201 }
+    );
   } catch (e) {
     console.error("[POST /api/candidates/[id]/calls]", e?.message || e);
     return NextResponse.json({ error: "Could not log the call." }, { status: 500 });

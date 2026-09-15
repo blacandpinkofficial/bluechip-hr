@@ -18,6 +18,28 @@ export const dynamic = "force-dynamic";
 
 const STATUSES = ["sent", "acknowledged", "shortlisted", "interview-scheduled", "rejected", "no-response"];
 
+// The candidate pipeline, in order. Used to move a candidate FORWARDS only.
+// "dropped" is deliberately NOT in this list, and that is exactly why the index
+// must be checked for -1 first. indexOf("dropped") is -1, and -1 is less than
+// 2, so the naive comparison quietly moved a dropped candidate FORWARDS to
+// shortlisted — the precise thing this guard exists to stop. Any unrecognised
+// stage is left alone rather than guessed at.
+const ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined"];
+
+// What a client's reply honestly tells us about the candidate, and nothing
+// more. A client acknowledging receipt says nothing about the candidate, so it
+// moves nobody. A rejection does NOT move anyone to "dropped": the client
+// passed on them for THIS opening, which is not the same as the candidate being
+// out of play, and the stage rule only ever moves forwards anyway.
+const STAGE_FLOOR = {
+  shortlisted: "shortlisted",
+  "interview-scheduled": "lined-up",
+};
+
+// A reply is a reply. "no-response" is the absence of one, so it must not stamp
+// a responded-at date — that date is what the chase list is measured from.
+const REPLIED = ["acknowledged", "shortlisted", "interview-scheduled", "rejected"];
+
 // Enough to name the file type on the way out. Anything not listed goes without
 // a content type, which is better than asserting the wrong one.
 const MIME = {
@@ -161,17 +183,9 @@ export async function POST(req) {
 
   // Moving the candidate on is the point of submitting them. Only forwards —
   // a candidate already at "interviewed" does not go back to "shortlisted"
-  // because someone sent the CV to a second client.
-  // "dropped" is deliberately NOT in this list, and that is exactly why the
-  // index must be checked for -1 first. indexOf("dropped") is -1, and -1 is
-  // less than 2, so the naive comparison quietly moved a dropped candidate
-  // FORWARDS to shortlisted — the precise thing this guard exists to stop.
-  // Any unrecognised stage is left alone rather than guessed at.
-  const ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed", "selected", "joined"];
-  const at = ORDER.indexOf(candidate.stage);
-  if (at >= 0 && at < ORDER.indexOf("shortlisted")) {
-    await prisma.candidate.update({ where: { id: candidateId }, data: { stage: "shortlisted" } }).catch(() => {});
-  }
+  // because someone sent the CV to a second client. See ORDER at the top of the
+  // file for why the -1 check is not optional.
+  await advanceStage(candidateId, candidate.stage, "shortlisted");
 
   // ── the email, second and optional ────────────────────────────────────────
   let mailResult = { ok: false, reason: "Not sent — recorded only." };
@@ -250,6 +264,9 @@ export async function PATCH(req) {
   if (status && !STATUSES.includes(status)) {
     return NextResponse.json({ error: `Status must be one of: ${STATUSES.join(", ")}` }, { status: 400 });
   }
+  if (!status && b.response === undefined) {
+    return NextResponse.json({ error: "Nothing to update." }, { status: 400 });
+  }
 
   const existing = await prisma.submission.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: "That submission no longer exists." }, { status: 404 });
@@ -264,10 +281,49 @@ export async function PATCH(req) {
       // The moment of the reply is recorded the first time a reply is recorded,
       // and not overwritten afterwards — it is when the client responded, not
       // when someone last edited the note.
-      ...(status && status !== "sent" && !existing.respondedAt ? { respondedAt: new Date() } : {}),
+      ...(status && REPLIED.includes(status) && !existing.respondedAt ? { respondedAt: new Date() } : {}),
       ...(b.response !== undefined ? { response: String(b.response || "").trim() || null } : {}),
     },
   });
 
-  return NextResponse.json({ submission: row });
+  // A client shortlisting someone is a real fact about that candidate, and the
+  // candidate screen is where the desk looks. Recording it in one place and not
+  // the other is how a candidate ends up sitting at "contacted" with an
+  // interview booked. Forwards only, same rule as everywhere else.
+  let movedTo = null;
+  const floor = status ? STAGE_FLOOR[status] : null;
+  if (floor) {
+    const candidate = await prisma.candidate
+      .findUnique({ where: { id: row.candidateId }, select: { id: true, stage: true } })
+      .catch(() => null);
+    if (candidate) movedTo = await advanceStage(candidate.id, candidate.stage, floor);
+  }
+
+  return NextResponse.json({ submission: row, candidateStage: movedTo });
+}
+
+/**
+ * Move a candidate forward to `target`, never backward, never sideways.
+ *
+ * Both indexes are checked against -1 before they are compared. A stage that is
+ * not in ORDER — "dropped", or anything a future migration adds — has an index
+ * of -1, and -1 is less than every real index, so an unchecked comparison reads
+ * as "miles behind, push them forward". That is how a dropped candidate gets
+ * resurrected by a client's reply. Unknown stages are left exactly as they are.
+ *
+ * Returns the stage it moved to, or null if it left the candidate alone.
+ */
+async function advanceStage(candidateId, currentStage, target) {
+  const at = ORDER.indexOf(currentStage);
+  const to = ORDER.indexOf(target);
+  if (at < 0 || to < 0 || at >= to) return null;
+  // Un-archive as we go. A candidate set aside by hand keeps archived:true,
+  // and every working queue filters on archived:false — so without this the
+  // client's reply moves them up the pipeline and straight out of the call
+  // list, visible only under History, where nobody is dialling.
+  const ok = await prisma.candidate
+    .update({ where: { id: candidateId }, data: { stage: target, archived: false } })
+    .then(() => true)
+    .catch(() => false);
+  return ok ? target : null;
 }
