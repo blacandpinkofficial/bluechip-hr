@@ -15,7 +15,7 @@ export async function PATCH(req, { params }) {
     const doc = await prisma.document.findUnique({ where: { id: params?.id } });
     if (!doc) return NextResponse.json({ error: "No such document." }, { status: 404 });
 
-    // The same shelf, the same door. Without this a telecaller cannot see a
+    // The same shelf, the same door. Without this a recruiter cannot see a
     // client agreement but can still unpin, retitle or archive one by id.
     if (isConfidentialKind(doc.kind) && !can(gate.user.role, "document.confidential")) {
       return NextResponse.json({ error: "No such document." }, { status: 404 });

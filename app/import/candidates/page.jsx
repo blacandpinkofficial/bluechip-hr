@@ -7,7 +7,7 @@
 // is caught, by a person, before a hundred unreachable candidates are saved.
 //
 // The opening is asked for BEFORE the file, because that is the order the work
-// happens in: a telecaller is handed a requirement, then goes and finds people
+// happens in: a recruiter is handed a requirement, then goes and finds people
 // for it. Choosing it first is also what lets the preview say, per row, whether
 // this person is already being worked by somebody for something else.
 

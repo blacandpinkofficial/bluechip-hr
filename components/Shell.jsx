@@ -48,7 +48,7 @@ const GROUPS = [
       { href: "/clients",      label: "Clients",      cap: "client.read" },
       { href: "/social",       label: "Post a job",   cap: "social.use" },
       { href: "/import",       label: "Import openings", cap: "import.run" },
-      // A telecaller loads their own calling list; they do not import openings.
+      // A recruiter loads their own calling list; they do not import openings.
       // Two entries, two capabilities — see the note on import.* in lib/auth.js.
       { href: "/import/candidates", label: "Import candidates", cap: "import.candidates" },
     ],

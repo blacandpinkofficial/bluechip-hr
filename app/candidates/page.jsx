@@ -194,7 +194,7 @@ export default function CandidatesPage() {
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState(null);
-  // Set by the import screen's "Start calling" link, so a telecaller lands on
+  // Set by the import screen's "Start calling" link, so a recruiter lands on
   // exactly the batch they just imported instead of the whole database.
   const [requirementId, setRequirementId] = useState("");
 
@@ -222,7 +222,7 @@ export default function CandidatesPage() {
   const [openings, setOpenings] = useState([]);
 
   // The after-the-call strip. One row at a time, one control at a time: three
-  // inputs open on every row at once is a wall, and a telecaller who has just
+  // inputs open on every row at once is a wall, and a recruiter who has just
   // put the phone down is looking for one thing.
   const [actRow, setActRow] = useState(null);   // { id, kind: "note"|"follow"|"opening" }
   const [noteText, setNoteText] = useState("");

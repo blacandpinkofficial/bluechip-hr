@@ -14,7 +14,7 @@
 // UPDATED, never duplicated — two rows for one person means two recruiters
 // ringing them about the same job, which is how a client stops taking the call.
 //
-// A batch is imported AGAINST AN OPENING: a telecaller is handed a requirement
+// A batch is imported AGAINST AN OPENING: a recruiter is handed a requirement
 // by their team leader and imports the list for it, so every row lands with
 // that requirementId and with the importer as owner. The one case that is never
 // decided automatically is a candidate already sitting against a DIFFERENT
@@ -216,7 +216,7 @@ async function commit(req, gate) {
   const rows = Array.isArray(body.rows) ? body.rows : [];
   const filename = String(body.filename || "export.xlsx");
   const requirementId = body.requirementId ? String(body.requirementId) : null;
-  // A telecaller is handed an opening and imports the list for it, so the
+  // A recruiter is handed an opening and imports the list for it, so the
   // batch belongs to whoever ran the import — they are the one who will dial
   // it. The screen can turn this off (assignToMe: false) when someone is
   // topping the database up for the desk rather than for themselves, because a

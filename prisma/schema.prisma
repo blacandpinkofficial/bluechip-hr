@@ -40,6 +40,20 @@ model User {
   role         String    @default("recruiter") // owner | manager | team_leader | recruiter
   active       Boolean   @default(true)
   lastLoginAt  DateTime?
+  // When they joined the payroll and, if they have gone, their last paid day.
+  // Both nullable and both @db.Date: a joining is a DAY, not an instant, and
+  // storing it as a timestamp puts an IST morning on the previous UTC date and
+  // quietly costs somebody a day's pay in their first month.
+  //
+  // Null joinedOn means "was here before the app was" — the whole month is
+  // paid, exactly as it was before these columns existed. That is what makes
+  // this safe to add to a live payroll: nobody's figures move until a date is
+  // actually filled in. createdAt is NOT used as a fallback, because it is the
+  // day the account was made, which for the existing team is the day the app
+  // was set up and for a new joiner is often a week either side of their
+  // actual start.
+  joinedOn     DateTime? @db.Date
+  leftOn       DateTime? @db.Date
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

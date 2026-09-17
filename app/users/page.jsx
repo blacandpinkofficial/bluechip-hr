@@ -20,6 +20,8 @@ function ago(d) {
 export default function UsersPage() {
   const [users, setUsers] = useState([]);
   const [me, setMe] = useState(null);
+  const [canWrite, setCanWrite] = useState(false);
+  const [savingDates, setSavingDates] = useState(null);
   // Nothing here happens on one click any more.
   const [confirm, setConfirm] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -38,6 +40,7 @@ export default function UsersPage() {
       if (!r.ok) throw new Error(j.error || "Could not load the team.");
       setUsers(j.users || []);
       setMe(j.me);
+      setCanWrite(!!j.canWrite);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -87,6 +90,23 @@ export default function UsersPage() {
       load();
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  /**
+   * Set or clear one of the two payroll dates.
+   *
+   * Sent as null when the field is emptied, not as "" — the route reads null as
+   * "clear this" and anything unparseable as a mistake worth a 400, so an empty
+   * string would be refused rather than clearing the date somebody is trying to
+   * remove.
+   */
+  async function setDate(id, field, value) {
+    setSavingDates(id);
+    try {
+      await patch(id, { [field]: value ? value : null });
+    } finally {
+      setSavingDates(null);
     }
   }
 
@@ -207,11 +227,12 @@ export default function UsersPage() {
         <div className="card p-10 text-center text-slate-400">Loading…</div>
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full text-sm min-w-[820px]">
+          <table className="w-full text-sm min-w-[980px]">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-left">
                 <th className="px-4 py-2 font-medium text-slate-600">Name</th>
                 <th className="px-4 py-2 font-medium text-slate-600">Role</th>
+                <th className="px-4 py-2 font-medium text-slate-600">On payroll</th>
                 <th className="px-4 py-2 font-medium text-slate-600">Activity</th>
                 <th className="px-4 py-2 font-medium text-slate-600">Last seen</th>
                 <th className="px-4 py-2 font-medium text-slate-600 text-right">Actions</th>
@@ -251,6 +272,36 @@ export default function UsersPage() {
                         ))}
                       </select>
                     )}
+                  </td>
+                  {/* Payroll pro-rates a first and last month from these. Left
+                      empty they mean "was here all along", which is what every
+                      account said before the columns existed — so a blank here
+                      changes nobody's pay. */}
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="flex items-center gap-2 text-[11px] text-slate-500">
+                        <span className="w-10 shrink-0">From</span>
+                        <input
+                          type="date"
+                          className="input py-1 text-xs w-auto"
+                          aria-label={`Joining date for ${u.name}`}
+                          disabled={!canWrite || savingDates === u.id}
+                          value={u.joinedOn ? String(u.joinedOn).slice(0, 10) : ""}
+                          onChange={(e) => setDate(u.id, "joinedOn", e.target.value)}
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 text-[11px] text-slate-500">
+                        <span className="w-10 shrink-0">Until</span>
+                        <input
+                          type="date"
+                          className="input py-1 text-xs w-auto"
+                          aria-label={`Last paid day for ${u.name}`}
+                          disabled={!canWrite || savingDates === u.id}
+                          value={u.leftOn ? String(u.leftOn).slice(0, 10) : ""}
+                          onChange={(e) => setDate(u.id, "leftOn", e.target.value)}
+                        />
+                      </label>
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-600">
                     <div className="tabular-nums">{u.callCount} calls · {u.candidateCount} candidates</div>
@@ -298,6 +349,11 @@ export default function UsersPage() {
           ))}
         </dl>
         <p className="text-xs text-slate-500 mt-3">
+          <b>On payroll</b> is what a first or last month&rsquo;s pay is worked out from:
+          monthly salary &divide; days in the month &times; days actually on the payroll, both
+          ends counted. Leave both empty for anyone who has been here all along &mdash; empty
+          means a full month, which is what every account said before these dates existed.
+          <br />
           Deactivating signs someone out immediately rather than at session expiry, and
           so does a password reset. The last active owner cannot be demoted or
           deactivated — there is no way back into commercials and invoicing from inside

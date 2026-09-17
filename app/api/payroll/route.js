@@ -22,7 +22,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
-import { payslip, achiever } from "@/lib/payroll";
+import { payslip, achiever, employedDaysInMonth } from "@/lib/payroll";
 import { monthRange, istMonth } from "@/lib/day";
 
 export const runtime = "nodejs";
@@ -72,7 +72,14 @@ async function computeMonth(month, range) {
 
   const users = await prisma.user.findMany({
     where: { OR: [{ active: true }, { id: { in: [...involved] } }] },
-    select: { id: true, name: true, role: true, email: true, active: true },
+    // joinedOn and leftOn are what payslip() pro-rates a part month from. Left
+    // out of this select, they arrive undefined and every joiner is quietly
+    // paid a full month — the failure is silent and in the employer's favour,
+    // which is the worst shape a payroll bug can have.
+    select: {
+      id: true, name: true, role: true, email: true, active: true,
+      joinedOn: true, leftOn: true,
+    },
     orderBy: { name: "asc" },
   });
 
@@ -97,7 +104,12 @@ async function computeMonth(month, range) {
     perfFor.set(p.recruiterId, cur);
   }
 
-  return users.map((u) => {
+  return users.filter((u) => {
+    // Somebody who joined after this month ended, or left before it began, has
+    // no payslip for it. They would otherwise appear with a zero and look like
+    // an unpaid employee rather than one who simply was not here.
+    return employedDaysInMonth(month, { joinedOn: u.joinedOn, leftOn: u.leftOn }) > 0;
+  }).map((u) => {
     const structure = structureFor.get(u.id) || null;
     const perf = perfFor.get(u.id) || { joinings: 0, revenue: 0 };
     const raw = ruleFor.get(u.id) || deskRule;

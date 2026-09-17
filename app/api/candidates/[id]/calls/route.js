@@ -43,7 +43,7 @@ const STAGE_ORDER = ["new", "contacted", "shortlisted", "lined-up", "interviewed
 //
 // It stops at interviewed on purpose. Selected and joined are money, and they
 // are recorded through Placements where the offer and the joining date are
-// captured; a telecaller must not be able to mark someone placed with one
+// captured; a recruiter must not be able to mark someone placed with one
 // click on a list.
 const ADVANCE_NEXT = {
   new: "shortlisted",
@@ -177,7 +177,7 @@ export async function POST(req, { params }) {
 /**
  * PATCH — write the remark against the call that has just been made.
  *
- * The note a telecaller wants to leave arrives AFTER the outcome button has
+ * The note a recruiter wants to leave arrives AFTER the outcome button has
  * been pressed: they click "Connected" while the phone is still at their ear,
  * and the useful sentence ("wants 22k, can join in a week, wife works in
  * Sholinganallur") only forms once the call is over. Until now the only way to

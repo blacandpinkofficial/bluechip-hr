@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Shell from "@/components/Shell";
-import { roleName } from "@/lib/roles";
+import { ROLE_LABELS, roleName } from "@/lib/roles";
 
 function pct(r) { return r == null ? "—" : `${r}%`; }
 function shortMoney(n) {
@@ -194,7 +194,7 @@ export default function ReportsPage() {
             >
               <b>Open the daily report</b>
               <span className="text-slate-500">
-                {" "}— the same day broken out one row per telecaller, with yesterday and the
+                {" "}— the same day broken out one row per {ROLE_LABELS.recruiter.toLowerCase()}, with yesterday and the
                 day before a click away. This is the other workbook, the one read every evening.
               </span>
             </Link>

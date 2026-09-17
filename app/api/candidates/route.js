@@ -149,7 +149,7 @@ export async function GET(req) {
 
   // "Last reached" is not "last dialled". Three no-answers in a row move
   // lastContactedAt every time and say nothing about whether anybody has
-  // actually spoken to this person — which is the fact a telecaller needs
+  // actually spoken to this person — which is the fact a recruiter needs
   // before deciding how to open the call. One grouped query for the whole
   // page, not one per row.
   const ids = rows.map((r) => r.id);
@@ -332,7 +332,7 @@ export async function POST(req) {
 
     return NextResponse.json({ candidate: created }, { status: 201 });
   } catch (e) {
-    // The findUnique above is a check, not a lock: two telecallers typing the
+    // The findUnique above is a check, not a lock: two recruiters typing the
     // same referral at the same moment both pass it and one of them hits the
     // @@unique([phone]) index on the way in. That is a duplicate, not a
     // failure, and it must read exactly like the one caught above — a 500 here
@@ -354,7 +354,7 @@ export async function POST(req) {
 
 /**
  * The one answer to "this number is already here". Says who it is, so the
- * caller can offer to open them instead of leaving a telecaller staring at a
+ * caller can offer to open them instead of leaving a recruiter staring at a
  * refusal, and says where they are so the screen knows which queue to look in
  * — somebody set aside months ago lives in History and would not be found by a
  * search of the working list.

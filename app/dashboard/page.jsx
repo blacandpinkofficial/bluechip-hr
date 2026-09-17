@@ -117,7 +117,7 @@ function plural(n, one, many) {
  * is the whole performance story of a landing page: in parallel this costs one
  * slow query's worth of time, in series it costs the sum of all of them.
  *
- * Scoping: a telecaller sees their own work, anyone holding report.desk sees the
+ * Scoping: a recruiter sees their own work, anyone holding report.desk sees the
  * desk. That is checked with can(), never by comparing role strings — a role
  * string comparison is a permission rule with no home, and it is always the one
  * that gets missed when a role is added.
@@ -525,7 +525,7 @@ export default async function Dashboard() {
   const nothingDue = d.late.length === 0 && d.dueToday.length === 0;
   const chasing = d.silentTotal > 0 || d.noNextCall > 0 || d.coldRoles.length > 0;
   // A fresh install, as opposed to a quiet day. Every one of these has to be
-  // empty, not just the candidate count: for a telecaller the candidate count is
+  // empty, not just the candidate count: for a recruiter the candidate count is
   // scoped to their own list, and a new joiner with nothing assigned yet must
   // not be told the whole company database is empty and offered an import.
   const fresh =

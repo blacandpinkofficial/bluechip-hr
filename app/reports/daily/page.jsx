@@ -168,7 +168,7 @@ export default function DailyReportPage() {
   return (
     <Shell
       title="Daily report"
-      subtitle="One row per telecaller, for one day. This is the evening sheet — counted from the work itself, so nobody fills it in."
+      subtitle={`One row per ${ROLE_LABELS.recruiter.toLowerCase()}, for one day. This is the evening sheet — counted from the work itself, so nobody fills it in.`}
       actions={
         <Link href="/reports" className="btn-ghost text-sm whitespace-nowrap">
           Trends &amp; funnel
@@ -289,10 +289,10 @@ export default function DailyReportPage() {
             </div>
           </section>
 
-          {/* ── one row per telecaller ────────────────────────────────────── */}
+          {/* ── one row per recruiter ─────────────────────────────────────── */}
           <section className="mt-7">
             <SectionHead
-              title={d.deskWide ? "Every telecaller" : "You"}
+              title={d.deskWide ? `Every ${ROLE_LABELS.recruiter.toLowerCase()}` : "You"}
               note={d.deskWide ? "busiest first, blank days last" : null}
             />
 
@@ -301,7 +301,7 @@ export default function DailyReportPage() {
                 <div className="text-chip-900 font-medium">No rows for this day.</div>
                 <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">
                   Everyone on the phones gets a row here whether or not they logged anything,
-                  so an empty table means there are no telecaller accounts yet — not that the
+                  so an empty table means there are no {ROLE_LABELS.recruiter.toLowerCase()} accounts yet — not that the
                   desk was quiet. Add the team and this fills itself in.
                 </p>
               </div>
@@ -467,7 +467,7 @@ export default function DailyReportPage() {
           <p className="text-xs text-slate-500 mt-6 max-w-prose">
             The day is the Indian working day, decided on the server from the server&rsquo;s clock:
             midnight to midnight IST, so a night shift&rsquo;s calls land on the night they were
-            made and not split across two pages. A telecaller with no row at all is a telecaller
+            made and not split across two pages. Somebody with no row at all is somebody
             with no account — everyone on the phones gets a row here every day, even an empty one,
             because the empty one is the thing this page exists to show.
             {d.showMoney

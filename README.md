@@ -81,7 +81,7 @@ The point of this section is that Blue Chip can run this without Ram, and leave
 it without anyone's permission.
 
 **Accounts.** Settings → Team. Create one account per person; roles are owner,
-manager and recruiter/telecaller. Passwords are generated and shown once — if
+manager, team leader and recruiter. Passwords are generated and shown once — if
 the box is closed before the password is passed on, reset it and a new one
 appears. The last active owner cannot be demoted or deactivated, because there
 is no route back into commercials and invoicing from inside the app once that

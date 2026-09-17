@@ -1,4 +1,4 @@
-// GET /api/reports/daily — one day, one row per telecaller.
+// GET /api/reports/daily — one day, one row per recruiter.
 //
 // This replaces the "recruiters daily report" workbook: the sheet somebody
 // filled in every evening so the desk could be read the next morning. Every
@@ -181,7 +181,7 @@ export async function GET(req) {
   const end = new Date(start.getTime() + MS_DAY);
   const inDay = { gte: start, lt: end };
 
-  // A telecaller sees their own row and nothing else. Scoped in the WHERE of
+  // A recruiter sees their own row and nothing else. Scoped in the WHERE of
   // every query rather than filtered out afterwards: work that never leaves the
   // database cannot be leaked by a mistake further down.
   const focusId = deskWide ? null : gate.user.id;
