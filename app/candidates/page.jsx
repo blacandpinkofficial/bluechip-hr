@@ -192,12 +192,6 @@ export default function CandidatesPage() {
   // asks for a row it already has, forever.
   const [nextSkip, setNextSkip] = useState(0);
   const [hasMore, setHasMore] = useState(false);
-  // Which filter the rows on screen belong to. A "load more" that is still in
-  // flight when someone changes tab or types in the search box would otherwise
-  // append the old list's next page onto the new list, and it would stay there.
-  const viewKey = `${queue}|${q}|${requirementId}`;
-  const viewRef = useRef(viewKey);
-  useEffect(() => { viewRef.current = viewKey; }, [viewKey]);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState(null);
   // Set by the import screen's "Start calling" link, so a telecaller lands on
@@ -271,6 +265,20 @@ export default function CandidatesPage() {
     // which is the usual case for a callback that slipped.
     setQueue("all");
   }, []);
+
+  // Which filter the rows on screen belong to. A "load more" still in flight
+  // when someone changes queue or types in the search box would otherwise
+  // append the old list's next page onto the new list, and it would stay there.
+  //
+  // Declared HERE, below every useState, and not up with the other paging
+  // state: it reads requirementId, which is declared further down, and a const
+  // read above its own declaration is a ReferenceError when the component
+  // renders rather than something the parser refuses. The build said "Cannot
+  // access 'V' before initialization" against a minified name, which is what
+  // that mistake looks like by the time it reaches you.
+  const viewKey = `${queue}|${q}|${requirementId}`;
+  const viewRef = useRef(viewKey);
+  useEffect(() => { viewRef.current = viewKey; }, [viewKey]);
 
   const load = useCallback(async () => {
     setLoading(true);
