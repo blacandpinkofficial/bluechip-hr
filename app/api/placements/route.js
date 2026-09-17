@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
+import { placementForRole } from "@/lib/placementView";
 import { freezeTerms, resolveFee, replacementDeadline } from "@/lib/fees";
 import { parseRupees } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
@@ -84,7 +85,9 @@ export async function GET(req) {
 
   // Whose fee may this person see? Asked once, per row, and then used for the
   // row, the totals and the by-recruiter bars alike, so the three can never
-  // disagree with each other.
+  // disagree with each other. The row projection asks exactly the same question
+  // in lib/placementView.js — this local copy still decides the TOTALS, which
+  // are not a row and so cannot be projected.
   const maySeeFee = (p) => deskRevenue || (ownRevenue && p.recruiterId === gate.user.id);
 
   // Joined is real; selected is a promise. Both are worth seeing, and
@@ -121,43 +124,15 @@ export async function GET(req) {
       // columns of dashes that invite someone to go looking.
       canSeeMoney: deskRevenue || rows.some((p) => maySeeFee(p)),
     },
-    placements: rows.map((p) => ({
-      id: p.id,
-      candidate: p.candidate,
-      client: p.client,
-      requirement: p.requirement,
-      recruiter: p.recruiter,
-      designation: p.designation,
-      location: p.location,
-      selectedOn: p.selectedOn,
-      joinedOn: p.joinedOn,
-      droppedOn: p.droppedOn,
-      dropReason: p.dropReason,
-      employeeId: p.employeeId,
-      ctcOfferedAnnual: p.ctcOfferedAnnual,
-      takeHomeMonthly: p.takeHomeMonthly,
-      ...(showFees ? { feeType: p.feeType, feeBps: p.feeBps, feeFlat: p.feeFlat } : {}),
-      // Omitted entirely rather than zeroed. A 0 reads as "this one earned
-      // nothing", which is a different and untrue statement.
-      //
-      // The invoice travels with the fee, not with the placement. An invoice
-      // number and a "paid" chip say what the desk billed and collected just as
-      // plainly as the rupee figure does, so they are behind the same gate.
-      ...(maySeeFee(p)
-        ? {
-            maySeeFee: true,
-            revenue: p.revenue,
-            invoiceStatus: p.invoiceStatus,
-            invoiceNo: p.invoiceNo,
-            invoicedOn: p.invoicedOn,
-            paidOn: p.paidOn,
-          }
-        : { maySeeFee: false }),
-      replacementUntil: p.replacementUntil,
-      // Within the free-replacement window the fee is not safe yet.
-      stillReplaceable:
-        !!p.replacementUntil && !p.droppedOn && new Date(p.replacementUntil) > new Date(),
-    })),
+    // One projector, shared with POST and PATCH. It is an allow-list: money is
+    // omitted entirely rather than zeroed (a 0 reads as "this one earned
+    // nothing", which is a different and untrue statement), the client's agreed
+    // rate rides on client.fees, and the invoice travels with the fee rather
+    // than with the placement — an invoice number and a "paid" chip say what
+    // the desk billed and collected just as plainly as the rupee figure does.
+    placements: rows.map((p) =>
+      placementForRole(p, gate.user.role, { viewerId: gate.user.id })
+    ),
     totals: {
       selected: rows.length,
       joined: joined.length,
@@ -302,13 +277,19 @@ export async function POST(req) {
       })
       .catch((e) => console.error("[placements] audit write failed:", e?.message));
 
-    // The created row carries `revenue` — the frozen fee. Strip it for anyone
-    // without revenue.read, or a team_leader who records a placement is told
-    // the fee in the confirmation toast, which is the same leak this route's
-    // GET was just fixed for.
-    const { revenue: _frozenFee, ...withoutFee } = created;
+    // BC-01. The created row is a full Placement: it carries `revenue` — the
+    // frozen fee — AND feeType/feeBps/feeFlat, which are the client's agreed
+    // commercial rate. This used to delete `revenue` alone and hand a
+    // team_leader the rate in the confirmation toast. Deleting named keys is
+    // the wrong shape of fix: it leaks every column added to Placement
+    // afterwards. Project through the shared allow-list instead, the same one
+    // GET and PATCH use.
     return NextResponse.json(
-      { placement: can(gate.user.role, "revenue.read") ? created : withoutFee },
+      {
+        placement: placementForRole(created, gate.user.role, {
+          viewerId: gate.user.id,
+        }),
+      },
       { status: 201 }
     );
   } catch (e) {

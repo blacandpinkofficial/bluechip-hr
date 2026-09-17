@@ -22,7 +22,8 @@ export default function PayrollPage() {
   const [error, setError] = useState("");
   const [flash, setFlash] = useState("");
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(null); // { message, payload }
+  const [confirm, setConfirm] = useState(null); // { message, payload, confirmKey, needsReason }
+  const [overrideReason, setOverrideReason] = useState("");
   const [open, setOpen] = useState(null);
 
   const load = useCallback(async () => {
@@ -58,13 +59,22 @@ export default function PayrollPage() {
         // A 409 asking for confirmation is not an error to swallow — it is the
         // app saying "are you sure", and it must be shown as a question.
         if (j.needsConfirmation) {
-          setConfirm({ message: j.error, payload });
+          // Each gate answers for itself. The granted flags accumulate on the
+          // payload, so confirming "the month is not over" does not also
+          // silently confirm "somebody has unresolved attendance".
+          setConfirm({
+            message: j.error,
+            payload,
+            confirmKey: j.confirmKey,
+            needsReason: !!j.needsReason,
+          });
           return;
         }
         throw new Error(j.error || "That did not work.");
       }
       setFlash(j.message);
       setConfirm(null);
+      setOverrideReason("");
       load();
     } catch (e) {
       setError(e.message);
@@ -79,7 +89,7 @@ export default function PayrollPage() {
   return (
     <Shell
       title="Payroll"
-      subtitle="Salary pro-rated by hours worked, plus incentive on candidates who actually joined."
+      subtitle="Fixed monthly salary less unpaid absence, plus incentive on candidates who actually joined."
       actions={
         <div className="flex gap-2">
           <select aria-label="Month" className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
@@ -112,15 +122,35 @@ export default function PayrollPage() {
       {confirm && (
         <div className="card border-amber-300 bg-amber-50 p-4 mb-4">
           <div className="text-sm text-amber-900">{confirm.message}</div>
+          {confirm.needsReason && (
+            <div className="mt-3">
+              <label htmlFor="override-reason" className="label">
+                Reason for locking anyway (recorded against your name)
+              </label>
+              <input
+                id="override-reason"
+                className="input"
+                value={overrideReason}
+                placeholder="Shift times confirmed with the team leader; sheet to be corrected next month"
+                onChange={(e) => setOverrideReason(e.target.value)}
+              />
+            </div>
+          )}
           <div className="flex gap-2 mt-3">
             <button
               className="btn-primary"
-              disabled={busy}
-              onClick={() => act({ ...confirm.payload, confirmEarly: true, confirmMissing: true })}
+              disabled={busy || (confirm.needsReason && overrideReason.trim().length < 10)}
+              onClick={() =>
+                act({
+                  ...confirm.payload,
+                  ...(confirm.confirmKey ? { [confirm.confirmKey]: true } : {}),
+                  ...(confirm.needsReason ? { overrideReason: overrideReason.trim() } : {}),
+                })
+              }
             >
               Lock anyway
             </button>
-            <button className="btn-ghost" onClick={() => setConfirm(null)}>Cancel</button>
+            <button className="btn-ghost" onClick={() => { setConfirm(null); setOverrideReason(""); }}>Cancel</button>
           </div>
         </div>
       )}
@@ -157,8 +187,8 @@ export default function PayrollPage() {
               <thead className="bg-slate-50 text-left text-slate-500">
                 <tr>
                   <th className="p-3 font-medium">Person</th>
-                  <th className="p-3 font-medium text-right">Hours</th>
-                  <th className="p-3 font-medium text-right">Of month</th>
+                  <th className="p-3 font-medium text-right">Hours recorded</th>
+                  <th className="p-3 font-medium text-right">Unpaid days</th>
                   <th className="p-3 font-medium text-right">Salary</th>
                   <th className="p-3 font-medium text-right">Joinings</th>
                   <th className="p-3 font-medium text-right">Incentive</th>
@@ -175,13 +205,16 @@ export default function PayrollPage() {
                     <tr className="border-t border-slate-100">
                       <td className="p-3">
                         <div className="font-medium text-chip-900">{r.name}</div>
+                        {r.activeUser === false && (
+                          <div className="text-xs text-slate-500">No longer active — still paid for this month</div>
+                        )}
                         {r.blocker && <div className="text-xs text-amber-800">{r.blocker}</div>}
                         {r.needsAttention && !r.blocker && (
                           <div className="text-xs text-amber-800">{r.incompleteDays} day(s) with no check-out</div>
                         )}
                       </td>
-                      <td className="p-3 text-right tabular-nums">{r.workedHours}</td>
-                      <td className="p-3 text-right tabular-nums text-slate-500">{r.proRataPct}%</td>
+                      <td className="p-3 text-right tabular-nums text-slate-500">{r.workedHours}</td>
+                      <td className="p-3 text-right tabular-nums">{r.unpaidDays || "—"}</td>
                       <td className="p-3 text-right tabular-nums">{inr(r.earnedBasic)}</td>
                       <td className="p-3 text-right tabular-nums">{r.joinings || "—"}</td>
                       <td className="p-3 text-right tabular-nums">{r.incentive ? inr(r.incentive) : "—"}</td>
@@ -275,21 +308,39 @@ function Payslip({ row, month }) {
     <div className="max-w-xl text-sm">
       <div className="font-medium text-chip-900 mb-2">{row.name} — {monthLabel(month)}</div>
       <Line label="Monthly salary" value={inr(row.monthlyGross)} />
-      <Line label="Full month" value={`${row.standardHours} hours`} />
-      <Line label="Worked" value={`${row.workedHours} hours (${row.proRataPct}%)`} />
+      {row.scheduledWorkingDays != null && (
+        <Line label="Scheduled working days" value={`${row.scheduledWorkingDays} days`} />
+      )}
+      {row.dayValue != null && <Line label="One day’s pay" value={inr(row.dayValue)} />}
       <Line label="Present" value={`${row.presentDays} days`} />
-      <Line label="Paid leave / holiday" value={`${row.paidLeaveDays} days`} />
-      <Line label="Absent" value={`${row.absentDays} days`} />
+      <Line label="Paid leave / holiday / weekly off" value={`${row.paidLeaveDays} days`} />
+      <Line label="Unpaid absence" value={`${row.unpaidDays ?? row.absentDays} days`} />
+      {row.incompleteDays > 0 && (
+        <Line label="Days with missing times (paid, still to fix)" value={`${row.incompleteDays} days`} />
+      )}
       <div className="border-t border-slate-200 my-2" />
+      {/* Hours are shown because a short shift is worth seeing. They are
+          recorded, not a basis for pay — the label has to say so. */}
+      <Line label="Hours recorded (not used to calculate pay)" value={`${row.workedHours} hours`} />
+      <div className="border-t border-slate-200 my-2" />
+      {row.unpaidDeduction > 0 && (
+        <Line label="Less unpaid absence" value={`− ${inr(row.unpaidDeduction)}`} />
+      )}
       <Line label="Earned salary" value={inr(row.earnedBasic)} />
       <Line label={`Incentive — ${row.incentiveBasis || "none"}`} value={inr(row.incentive)} />
       {row.deductions > 0 && <Line label="Deductions" value={`− ${inr(row.deductions)}`} />}
       <div className="border-t border-slate-200 my-2" />
       <Line label="Net pay" value={inr(row.netPay)} strong />
       <p className="text-xs text-slate-500 mt-3">
-        Salary is pro-rated by hours worked, capped at one full month — extra hours do
-        not increase it. Incentive counts only candidates who joined and did not drop.
+        {row.payBasis}. Incentive counts only candidates who joined and did not drop.
       </p>
+      {row.frozen && (
+        <p className="text-xs text-slate-500 mt-2">
+          This month is locked, so every figure above is the stored copy from lock time.
+          Months locked before the fixed-monthly rule came in were calculated under the
+          older hours-based rule and have deliberately not been recalculated.
+        </p>
+      )}
     </div>
   );
 }

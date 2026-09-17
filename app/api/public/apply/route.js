@@ -12,23 +12,30 @@
 //   new row or an error                      second role should not be told
 //                                            they already exist
 //
-// It writes a Candidate like any other, marked source "website". It never
-// returns anything about existing candidates: "is 9876543210 in your database"
-// is not a question a stranger gets to ask.
+// It writes a Candidate like any other, marked source "website", AND an
+// Application row for the opening applied to. The two are not the same record
+// and must not be collapsed into one: Candidate.phone is unique because a
+// phone number is one person, while a person may apply to four openings over a
+// year and every one of them is a separate thing a recruiter has to answer.
+// Candidate.requirementId holds one opening — the one this person is currently
+// being worked for — and the Application rows are the complete history.
 //
-// Why this still writes to Candidate rather than to a review table the way the
-// hiring form does: a candidate application already IS a review queue. The row
-// lands at stage "new" with source "website" and no owner, which is exactly
-// what an unworked lead looks like on the calling screen, and Candidate.phone
-// is unique — the constraint that stops one person becoming four rows. A
-// parallel table would fork the pipeline and would have to re-implement that
-// constraint against the table it was trying to stay out of. A hiring enquiry
-// has no such home: it would have to invent a Client and a Requirement, which
-// is why that one waits for a human.
+// It never returns anything about existing candidates: "is 9876543210 in your
+// database" is not a question a stranger gets to ask. The success response is
+// byte-identical whether this was a brand new person, a known person applying
+// to a second role, or the same form submitted twice.
+//
+// What { ok: true } means here: the application is persisted. If the write
+// fails it says so and asks for a retry, because a candidate who is told
+// "thank you, a recruiter will call" and is in nobody's queue is worse served
+// than one who is asked to press the button again. The single exception is the
+// honeypot, which answers as though it worked and writes nothing — telling a
+// bot it was detected only teaches whoever wrote it what to change.
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { intOrNull, rupeesOrNull, recordApplication } from "@/lib/applications";
 import { clientIp, tooMany } from "../_ratelimit";
 
 export const runtime = "nodejs";
@@ -50,6 +57,7 @@ const CAP = {
   skills: 500,
   education: 200,
   resumeText: 5000,
+  userAgent: 300,
 };
 
 export async function POST(req) {
@@ -71,8 +79,6 @@ export async function POST(req) {
 
     // Honeypot: a field hidden from people and irresistible to bots.
     if (String(b.website || "").trim()) {
-      // Answer as though it worked. Telling a bot it was detected only teaches
-      // whoever wrote it what to change.
       return NextResponse.json({ ok: true });
     }
 
@@ -111,47 +117,29 @@ export async function POST(req) {
       skills: clean(b.skills, CAP.skills) || null,
       education: clean(b.education, CAP.education) || null,
       resumeText: clean(b.resumeText, CAP.resumeText) || null,
+      // Provenance on the gap-fill path too, not only on create. A blank
+      // source column filled from the public form should say where the data
+      // came from; a column a recruiter already filled in with "referral" is
+      // left exactly as it is, like every other field here.
+      source: "website",
     };
 
-    const existing = await prisma.candidate.findUnique({
-      where: { phone },
-      select: candidateGapShape(),
+    const saved = await recordApplication({
+      phone,
+      fields,
+      requirement,
+      ip,
+      userAgent: clean(req.headers.get("user-agent"), CAP.userAgent) || null,
     });
 
-    if (existing) {
-      await fillGaps(existing, fields, requirement);
-      return NextResponse.json({ ok: true });
+    if (!saved?.ok) {
+      return NextResponse.json(
+        { error: "We could not save your application just now. Please try again in a moment." },
+        { status: 503 }
+      );
     }
 
-    try {
-      await prisma.candidate.create({
-        data: {
-          ...fields,
-          phone,
-          source: "website",
-          stage: "new",
-          requirementId: requirement?.id || null,
-          status: requirement
-            ? `Applied online for ${requirement.designation}`
-            : "Applied online",
-        },
-      });
-    } catch (e) {
-      // P2002 on phone. Two applications from the same number arriving close
-      // enough together that both passed the findUnique above, or a recruiter
-      // typing the same person in at the same moment. Treat the second one as
-      // what it is — the same person — and fold it into the row that won.
-      //
-      // The response below is identical either way, which is the point: a
-      // different status code here would turn this endpoint into a way to ask
-      // "is this number on Blue Chip's books", one guess at a time.
-      if (e?.code !== "P2002") throw e;
-      const row = await prisma.candidate
-        .findUnique({ where: { phone }, select: candidateGapShape() })
-        .catch(() => null);
-      if (row) await fillGaps(row, fields, requirement);
-    }
-
+    // Identical for a new candidate, a known one, and a resubmission.
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error("[POST /api/public/apply]", e?.message || e);
@@ -165,61 +153,7 @@ export async function POST(req) {
 // ── helpers ─────────────────────────────────────────────────────────────────
 // None of these are exported. A route.js may export HTTP handlers and Next's
 // segment config and nothing else; an exported helper here is a build error,
-// not a style opinion.
-
-/**
- * Someone already known applying again. Fill the gaps in what we hold, never
- * overwrite what a recruiter typed after speaking to them, and attach the new
- * role if they had none.
- *
- * "Never overwrite" is doing real work: without it, anyone who knows a
- * candidate's mobile number could rewrite that candidate's record from the
- * public form. They can still fill a blank — see the note in the summary — but
- * they cannot change an answer a recruiter already got on the phone.
- */
-async function fillGaps(existing, fields, requirement) {
-  const fill = {};
-  for (const [k, v] of Object.entries(fields)) {
-    if (v != null && existing[k] == null) fill[k] = v;
-  }
-  if (requirement && !existing.requirementId) fill.requirementId = requirement.id;
-  // Un-archive ONLY someone nobody has worked yet.
-  //
-  // This endpoint is on the open internet. Flipping archived:false for any
-  // known phone number means a stranger who has someone's mobile can push a
-  // candidate a recruiter deliberately set aside — or one already dropped,
-  // selected or joined — back onto the working queues, which all filter on
-  // archived:false. A fresh row nobody has touched is a real application; an
-  // archived row with calls behind it is a decision somebody made.
-  if (existing.archived && existing.stage === "new" && !existing.callCount) {
-    fill.archived = false;
-  }
-  if (Object.keys(fill).length === 0) return;
-  await prisma.candidate
-    .update({ where: { id: existing.id }, data: fill })
-    .catch((e) => console.error("[apply] gap fill failed:", e?.message || e));
-}
-
-/** Exactly the columns fillGaps reads. Selected explicitly so a future column
- *  on Candidate is not pulled into this route by accident. */
-function candidateGapShape() {
-  return {
-    id: true,
-    name: true,
-    email: true,
-    designation: true,
-    location: true,
-    expMonths: true,
-    noticeDays: true,
-    currentCtc: true,
-    expectedCtc: true,
-    skills: true,
-    education: true,
-    resumeText: true,
-    requirementId: true,
-    archived: true,
-  };
-}
+// not a style opinion. Anything another file needs is in lib/applications.js.
 
 function clean(v, max) {
   return stripControls(String(v == null ? "" : v)).trim().slice(0, max);
@@ -242,17 +176,4 @@ function stripControls(s) {
     out += (c < 32 && c !== 9 && c !== 10 && c !== 13) || c === 127 ? " " : s[i];
   }
   return out;
-}
-
-function intOrNull(v, max) {
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 && n <= max ? Math.round(n) : null;
-}
-
-/** Monthly take-home, integer rupees. A plain number only: lib/money.js's
- *  parseRupees accepts "18k" because a recruiter says it out loud, but this
- *  form has a numeric field and a stranger typing on the other side of it. */
-function rupeesOrNull(v) {
-  const n = Number(String(v == null ? "" : v).replace(/[₹,\s]/g, ""));
-  return Number.isFinite(n) && n >= 0 && n <= 10000000 ? Math.round(n) : null;
 }

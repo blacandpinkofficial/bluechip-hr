@@ -3,6 +3,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
+import { placementForRole } from "@/lib/placementView";
 import { replacementDeadline } from "@/lib/fees";
 import { getSettings } from "@/lib/settings";
 
@@ -95,6 +96,39 @@ export async function PATCH(req, { params }) {
       if (!INVOICE.includes(b.invoiceStatus)) {
         return NextResponse.json({ error: `Unknown invoice status "${b.invoiceStatus}".` }, { status: 400 });
       }
+
+      // A placement that an invoice already owns is that invoice's business.
+      //
+      // billedByInvoiceId is set inside the invoice transaction and cleared
+      // when the invoice is cancelled. While it is set, typing a status here
+      // puts two writers on one fact: set "pending" and the placement vanishes
+      // from the invoices screen's unbilled list (which filters on the claim)
+      // while still counting as un-invoiced on the placements screen, and the
+      // two disagree permanently.
+      if (existing.billedByInvoiceId) {
+        return NextResponse.json(
+          {
+            error:
+              "This placement is on an invoice. Change it on the invoice — the placement follows the invoice, not the other way round.",
+            invoiceNo: existing.invoiceNo || null,
+          },
+          { status: 409 }
+        );
+      }
+
+      // "Paid" is not a thing anyone types. It is what a recorded receipt
+      // makes true. Allowing it here was how revenue could be reported as
+      // collected with no Payment row behind it — the exact hole the payment
+      // ledger exists to close, reached through a different door.
+      if (b.invoiceStatus === "paid") {
+        return NextResponse.json(
+          {
+            error:
+              "Record the payment against the invoice instead. A placement is marked paid by the receipt, not by hand.",
+          },
+          { status: 400 }
+        );
+      }
       if (b.invoiceStatus !== "pending" && !existing.joinedOn && !data.joinedOn) {
         return NextResponse.json(
           { error: "Record the joining date before invoicing — the fee is only due once they have joined." },
@@ -105,12 +139,16 @@ export async function PATCH(req, { params }) {
       // Stamped the first time only. These are the dates the invoice was raised
       // and settled, not the date somebody last touched the row.
       if (b.invoiceStatus === "raised" && !existing.invoicedOn) data.invoicedOn = new Date();
-      if (b.invoiceStatus === "paid") {
-        if (!existing.invoicedOn) data.invoicedOn = new Date();
-        if (!existing.paidOn) data.paidOn = new Date();
-      }
     }
-    if (b.invoiceNo !== undefined) data.invoiceNo = String(b.invoiceNo || "").trim() || null;
+    if (b.invoiceNo !== undefined) {
+      if (existing.billedByInvoiceId) {
+        return NextResponse.json(
+          { error: "The invoice number comes from the invoice. Change it there." },
+          { status: 409 }
+        );
+      }
+      data.invoiceNo = String(b.invoiceNo || "").trim() || null;
+    }
 
     // ── the drop ─────────────────────────────────────────────────────────────
     if (b.droppedOn !== undefined) {
@@ -209,7 +247,15 @@ export async function PATCH(req, { params }) {
         .catch((e) => console.error("[placement patch] audit write failed:", e?.message));
     }
 
-    return NextResponse.json({ placement: updated });
+    // BC-01. This used to return the raw updated row: `revenue`, `feeType`,
+    // `feeBps` and `feeFlat` went back to any placement.write holder who
+    // recorded a joining date — which is every team leader. Same allow-list as
+    // GET and POST, so the three cannot drift apart again.
+    return NextResponse.json({
+      placement: placementForRole(updated, gate.user.role, {
+        viewerId: gate.user.id,
+      }),
+    });
   } catch (e) {
     console.error("[PATCH /api/placements/[id]]", e?.message || e);
     return NextResponse.json({ error: "Could not save the change." }, { status: 500 });

@@ -50,6 +50,13 @@ export default function ApplyForm({ requirementId, designation }) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || "Something went wrong. Please try again.");
+      // The route promises that { ok: true } means the application is saved.
+      // This holds it to that promise rather than treating any 200 as success:
+      // "Thank you, a recruiter will call" is a thing we should only say when
+      // somebody is actually going to be able to.
+      if (j.ok !== true) {
+        throw new Error(j.error || "We could not save your application. Please try again.");
+      }
       setSent(true);
     } catch (err) {
       setError(err.message || "Something went wrong. Please try again.");

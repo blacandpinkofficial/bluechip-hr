@@ -16,10 +16,13 @@ const STATUS_TONE = {
   holiday: "bg-sky-50 text-sky-800 border-sky-200",
   "week-off": "bg-slate-100 text-slate-600 border-slate-300",
   absent: "bg-red-50 text-red-800 border-red-200",
+  "unpaid-leave": "bg-red-50 text-red-800 border-red-200",
   "half-day": "bg-violet-50 text-violet-800 border-violet-200",
 };
 
-const STATUSES = ["present", "leave", "holiday", "week-off", "half-day", "absent"];
+// Ordered paid-first, then the two that actually cost the person money, so the
+// unpaid options are not a slip of the mouse away from "leave".
+const STATUSES = ["present", "leave", "holiday", "week-off", "half-day", "absent", "unpaid-leave"];
 
 function dayLabel(d) {
   return new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", weekday: "short", timeZone: "UTC" });
@@ -105,6 +108,13 @@ export default function AttendancePage() {
   const checkedIn = !!mine?.checkIn;
   const checkedOut = !!mine?.checkOut;
 
+  // An open shift may belong to YESTERDAY — a night shift started at 23:00 is
+  // closed after midnight, on a different IST day. Checking out has to be
+  // possible then, or the person is stuck at zero hours for a day they worked.
+  const openShift = data?.openShift || null;
+  const canCheckOut = !!openShift?.canCheckOut;
+  const staleShift = !!openShift && !openShift.canCheckOut;
+
   return (
     <Shell
       title="Attendance"
@@ -134,7 +144,20 @@ export default function AttendancePage() {
             </div>
             {checkedIn && !checkedOut && (
               <p className="text-xs text-slate-500 mt-1">
-                Remember to check out. A day with no check-out counts as no hours, not a full day.
+                Remember to check out. A day with no check-out is still paid, but it stays
+                flagged until somebody fills in the time.
+              </p>
+            )}
+            {openShift?.fromPreviousDay && openShift.canCheckOut && (
+              <p className="text-xs text-amber-800 mt-1">
+                Your shift from {openShift.day} is still open — checking out now closes that
+                day, not today.
+              </p>
+            )}
+            {staleShift && (
+              <p className="text-xs text-amber-800 mt-1">
+                Your check-in from {openShift.day} was never closed and is now
+                {" "}{openShift.hoursOpen} hours old. A manager needs to correct that day.
               </p>
             )}
           </div>
@@ -142,7 +165,7 @@ export default function AttendancePage() {
             <button className="btn-primary" onClick={() => tap("in")} disabled={busy || checkedIn}>
               Check in
             </button>
-            <button className="btn-ghost" onClick={() => tap("out")} disabled={busy || !checkedIn || checkedOut}>
+            <button className="btn-ghost" onClick={() => tap("out")} disabled={busy || !canCheckOut}>
               Check out
             </button>
           </div>
@@ -290,10 +313,13 @@ export default function AttendancePage() {
       )}
 
       <p className="text-xs text-slate-500 mt-4 max-w-prose">
-        Pay is calculated from hours actually worked, not from the number of days with
-        a row. A six-hour day on an eight-hour shift is six-eighths of that day&rsquo;s pay.
-        Days with no check-out count as no hours until someone fixes them, which is why
-        they are listed rather than quietly averaged.
+        Salary is a fixed monthly amount. Weekly offs, holidays and approved leave are
+        paid and do not change it. The only thing that reduces pay is a day marked
+        absent or unpaid leave, worth one day&rsquo;s pay &mdash; the monthly salary divided by
+        the scheduled working days in that month. Hours are recorded and shown because
+        a short shift or a missing check-out is worth seeing, but they no longer scale
+        anyone&rsquo;s salary. A day with no check-out is paid in full and stays flagged
+        until somebody fills in the time.
       </p>
     </Shell>
   );

@@ -33,6 +33,16 @@ const PUBLIC = [
   "/careers",
   "/api/public",
   "/api/cron",
+  // Crawler metadata. Both of these were redirecting to /login, which did the
+  // opposite of what they exist for: app/robots.js is a deny-everything-except
+  // /careers policy, so a crawler that cannot read it falls back to its own
+  // default and indexes /login, /dashboard and the API paths — exactly what
+  // the file was written to prevent. And nothing ever fetched the sitemap,
+  // because the only pointer to it lives inside that unreachable robots.txt.
+  // Next generates both from app/robots.js and app/sitemap.js; neither reads
+  // a session.
+  "/robots.txt",
+  "/sitemap.xml",
 ];
 
 export function middleware(req) {

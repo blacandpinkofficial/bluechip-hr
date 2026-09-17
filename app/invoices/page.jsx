@@ -7,13 +7,32 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
-import { paiseToString } from "@/lib/invoice";
+import { paiseToString, parseRupeesToPaise } from "@/lib/invoice";
 
 function inr(rupees) {
   return `₹${Number(rupees || 0).toLocaleString("en-IN")}`;
 }
 function dt(x) {
   return x ? new Date(x).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "—";
+}
+
+/**
+ * A fresh idempotency key.
+ *
+ * crypto.randomUUID needs a secure context; behind a plain-HTTP reverse proxy
+ * it is simply not there, and a payment box that throws is worse than one with
+ * a slightly less elegant key. The fallback is random enough for what this is
+ * for — telling one payment-entry session apart from another.
+ */
+function newIdempotencyKey() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // fall through
+  }
+  return `pay-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 const STATUS_TONE = {
@@ -34,6 +53,18 @@ export default function InvoicesPage() {
   const [picked, setPicked] = useState(new Set());
   const [payFor, setPayFor] = useState(null);
   const [payAmount, setPayAmount] = useState("");
+  // ── BC-03, the client half ──────────────────────────────────────────────
+  //
+  // One key per payment-entry session, sent with every attempt at that one
+  // payment, and replaced ONLY once the server has confirmed the receipt.
+  //
+  // That ordering is the whole point. A double-click, or a retry after a
+  // request that timed out but actually landed, sends the key the server has
+  // already seen and is answered with "already recorded" instead of taking the
+  // money twice. Regenerating on failure — or on every render — would make the
+  // key decorative, because the retry would carry a key the server has never
+  // seen and would be recorded as a second payment.
+  const [payKey, setPayKey] = useState(newIdempotencyKey);
   // Writing an invoice off says the money is never coming. One click, next to
   // the Save button, was too easy a way to say it.
   const [confirmOff, setConfirmOff] = useState(null);
@@ -55,16 +86,20 @@ export default function InvoicesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const uninvoiced = Array.isArray(data?.uninvoiced) ? data.uninvoiced : [];
+  const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+  const companyReady = Array.isArray(data?.companyReady) ? data.companyReady : [];
+
   // Placements are grouped by client because one invoice bills one client. The
   // tick boxes are scoped to a client for the same reason — selecting across
   // two clients is not a thing that can be billed.
   const byClient = {};
-  for (const p of data?.uninvoiced || []) {
+  for (const p of uninvoiced) {
     (byClient[p.clientId] ||= { name: p.client, rows: [] }).rows.push(p);
   }
 
   const pickedClient = (() => {
-    const first = (data?.uninvoiced || []).find((p) => picked.has(p.id));
+    const first = uninvoiced.find((p) => picked.has(p.id));
     return first ? first.clientId : null;
   })();
 
@@ -80,6 +115,22 @@ export default function InvoicesPage() {
     }
     setError("");
     setPicked(next);
+  }
+
+  function openPayment(invoiceId, outstandingPaise) {
+    if (payFor === invoiceId) {
+      setPayFor(null);
+      return;
+    }
+    setPayFor(invoiceId);
+    // Prefilled with the balance, because that is what usually arrives. A fully
+    // settled invoice opens empty — the box is then there to enter a reversal.
+    setPayAmount(outstandingPaise > 0 ? String(Math.round(outstandingPaise / 100)) : "");
+    // A new payment-entry session, so a new key. Opening the box for a second
+    // invoice must never reuse the first invoice's key.
+    setPayKey(newIdempotencyKey());
+    setConfirmOff(null);
+    setError("");
   }
 
   async function raise() {
@@ -118,28 +169,54 @@ export default function InvoicesPage() {
       setFlash(j.message);
       setPayFor(null);
       setPayAmount("");
+      // Confirmed. Only now is the key spent, so the next payment gets a new
+      // one and this one can never be reused for different money.
+      setPayKey(newIdempotencyKey());
       load();
     } catch (e) {
+      // Deliberately NOT regenerating payKey here. The request may well have
+      // reached the database before the connection dropped; pressing Save again
+      // must send the same key so the server recognises the retry.
       setError(e.message);
     } finally {
       setBusy(false);
     }
   }
 
+  function savePayment(invoiceId) {
+    const paise = parseRupeesToPaise(payAmount);
+    if (paise === null) {
+      setError("Enter the amount received in rupees — digits, with at most two decimal places.");
+      return;
+    }
+    if (paise === 0) {
+      setError("Enter the amount that actually arrived.");
+      return;
+    }
+    patch({ id: invoiceId, amountPaise: paise, idempotencyKey: payKey });
+  }
+
   const ag = data?.ageing;
+  const ageingRowsOnPage = Array.isArray(ag?.rows) ? ag.rows : [];
+  // Computed here rather than inline, because a comparison against zero inside
+  // JSX reads as a tag to anyone skimming and as an escape-sequence problem to
+  // anyone editing it.
+  const enteredPaise = parseRupeesToPaise(payAmount);
+  const isReversal = enteredPaise !== null && Math.sign(enteredPaise) === -1;
+  const saveLabel = busy ? "Saving…" : isReversal ? "Record reversal" : "Save";
 
   return (
     <Shell title="Invoices" subtitle="What has been billed, what is overdue, and what has been earned but never asked for.">
       {error && <div role="alert" className="card border-red-200 bg-red-50 p-3 text-sm text-red-800 mb-4">{error}</div>}
       {flash && <div className="card border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 mb-4">{flash}</div>}
 
-      {data?.companyReady?.length > 0 && (
+      {companyReady.length > 0 && (
         <div className="card border-amber-200 bg-amber-50 p-4 mb-4">
           <div className="text-sm font-medium text-amber-900">
             Invoices cannot be raised correctly until these are filled in:
           </div>
           <ul className="text-sm text-amber-900/90 mt-2 space-y-0.5">
-            {data.companyReady.map((b, i) => <li key={i}>• {b}</li>)}
+            {companyReady.map((b, i) => <li key={i}>• {b}</li>)}
           </ul>
           <a href="/settings" className="btn-ghost mt-3 inline-flex text-sm">Open settings</a>
         </div>
@@ -160,10 +237,17 @@ export default function InvoicesPage() {
               <div>
                 <div className="font-medium text-chip-900">Earned but not invoiced</div>
                 <div className="text-sm text-slate-500">
-                  {data.uninvoiced.length === 0
+                  {data.uninvoicedCount === 0
                     ? "Nothing outstanding — every joined placement has been billed."
-                    : `${data.uninvoiced.length} placement${data.uninvoiced.length === 1 ? "" : "s"} worth ${inr(data.uninvoicedTotal)}.`}
+                    : `${data.uninvoicedCount} placement${data.uninvoicedCount === 1 ? "" : "s"} worth ${inr(data.uninvoicedTotal)}.`}
                 </div>
+                {/* The total above is counted over every unbilled placement.
+                    The list below is the first 200 of them. */}
+                {data.uninvoicedCount > uninvoiced.length && (
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    Showing the {uninvoiced.length} longest outstanding. The figure above covers all {data.uninvoicedCount}.
+                  </div>
+                )}
               </div>
               {picked.size > 0 && data.canWrite && (
                 <button className="btn-primary" onClick={raise} disabled={busy}>
@@ -207,6 +291,11 @@ export default function InvoicesPage() {
           </div>
 
           {/* ── ageing ─────────────────────────────────────────────────────── */}
+          {/* Counted by the database across every outstanding invoice, not
+              folded over the page of rows below. Before BC-05 these buckets
+              were computed from the most recent 300 invoices, so the oldest
+              debt — the only reason to look at an ageing report — was the
+              first thing to fall off it. */}
           {ag && ag.totalOutstandingPaise > 0 && (
             <div className="grid sm:grid-cols-5 gap-3 mb-6">
               <Bucket label="Not due" b={ag.buckets.notDue} />
@@ -218,7 +307,7 @@ export default function InvoicesPage() {
           )}
 
           {/* ── the invoices ───────────────────────────────────────────────── */}
-          {data.invoices.length === 0 ? (
+          {invoices.length === 0 ? (
             <div className="card p-10 text-center">
               <div className="text-chip-900 font-medium">No invoices yet.</div>
               <p className="text-sm text-slate-500 mt-1">Tick a placement above and raise the first one.</p>
@@ -239,8 +328,8 @@ export default function InvoicesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.invoices.map((inv) => {
-                    const row = ag?.rows.find((r) => r.id === inv.id);
+                  {invoices.map((inv) => {
+                    const row = ageingRowsOnPage.find((r) => r.id === inv.id);
                     const outstanding = inv.totalPaise - (inv.paidPaise || 0);
                     return (
                       <Fragment key={inv.id}>
@@ -266,9 +355,9 @@ export default function InvoicesPage() {
                           <td className="p-3 text-right whitespace-nowrap">
                             <a href={`/invoices/${inv.id}/print`} target="_blank" rel="noopener noreferrer"
                               className="text-xs text-slate-400 hover:text-chip-700 mr-2">Print</a>
-                            {data.canWrite && outstanding > 0 && (
+                            {data.canWrite && inv.status !== "cancelled" && (
                               <button className="text-xs text-slate-400 hover:text-chip-700"
-                                onClick={() => { setPayFor(payFor === inv.id ? null : inv.id); setPayAmount(String(Math.round(outstanding / 100))); }}>
+                                onClick={() => openPayment(inv.id, outstanding)}>
                                 Record payment
                               </button>
                             )}
@@ -280,12 +369,12 @@ export default function InvoicesPage() {
                               <div className="flex flex-wrap items-end gap-3">
                                 <div>
                                   <label htmlFor={`pay-${inv.id}`} className="label">Amount received (₹)</label>
-                                  <input id={`pay-${inv.id}`} className="input max-w-[12rem]" inputMode="numeric"
+                                  <input id={`pay-${inv.id}`} className="input max-w-[12rem]" inputMode="decimal"
                                     value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
                                 </div>
                                 <button className="btn-primary" disabled={busy}
-                                  onClick={() => patch({ id: inv.id, paidRupees: Number(payAmount) })}>
-                                  Save
+                                  onClick={() => savePayment(inv.id)}>
+                                  {saveLabel}
                                 </button>
                                 <button className="btn-ghost" onClick={() => setPayFor(null)}>Cancel</button>
                                 <button className="text-xs text-slate-400 hover:text-red-700 ml-auto"
@@ -309,7 +398,10 @@ export default function InvoicesPage() {
                                 </div>
                               ) : (
                                 <p className="text-xs text-slate-500 mt-2">
-                                  Part payments are fine — enter what actually arrived, and the balance stays outstanding.
+                                  Part payments are fine — enter what actually arrived, and the balance stays
+                                  outstanding. Every receipt is kept as its own line, so a mistake is corrected
+                                  by entering a negative amount rather than by editing this figure. Pressing Save
+                                  twice records one payment, not two.
                                 </p>
                               )}
                             </td>
@@ -320,6 +412,11 @@ export default function InvoicesPage() {
                   })}
                 </tbody>
               </table>
+              {data.totalCount > invoices.length && (
+                <div className="p-3 text-xs text-slate-400 border-t border-slate-100">
+                  Showing {invoices.length} of {data.totalCount} invoices. The ageing figures above cover all of them.
+                </div>
+              )}
             </div>
           )}
         </>
@@ -330,11 +427,12 @@ export default function InvoicesPage() {
 
 function Bucket({ label, b, tone }) {
   const colour = tone === "red" ? "text-red-700" : tone === "amber" ? "text-amber-800" : "text-chip-900";
+  const bucket = b || { count: 0, paise: 0 };
   return (
     <div className="card p-4">
       <div className="text-xs text-slate-500">{label}</div>
-      <div className={"text-lg tabular-nums mt-1 " + colour}>₹{paiseToString(b.paise).replace(/\.00$/, "")}</div>
-      <div className="text-xs text-slate-400">{b.count} invoice{b.count === 1 ? "" : "s"}</div>
+      <div className={"text-lg tabular-nums mt-1 " + colour}>₹{paiseToString(bucket.paise).replace(/\.00$/, "")}</div>
+      <div className="text-xs text-slate-400">{bucket.count} invoice{bucket.count === 1 ? "" : "s"}</div>
     </div>
   );
 }

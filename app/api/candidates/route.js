@@ -111,7 +111,29 @@ export async function GET(req) {
         take: 1,
         select: { calledAt: true, outcome: true, notes: true, followUpAt: true },
       },
-      _count: { select: { calls: true, interviews: true } },
+      // Every opening this person has applied to, not just the one
+      // Candidate.requirementId points at. That column holds exactly one
+      // opening — the one they are currently being worked for — so before
+      // Application existed a candidate who applied to a second role wrote
+      // nothing anybody could see. Newest first, capped: a row on a list
+      // screen needs the recent ones, and the candidate's own page is where
+      // the full history belongs.
+      applications: {
+        orderBy: { appliedAt: "desc" },
+        take: 10,
+        select: {
+          id: true,
+          status: true,
+          appliedAt: true,
+          source: true,
+          selfReported: true,
+          requirementId: true,
+          requirement: {
+            select: { id: true, designation: true, client: { select: { name: true } } },
+          },
+        },
+      },
+      _count: { select: { calls: true, interviews: true, applications: true } },
     },
   });
 
@@ -177,6 +199,19 @@ export async function GET(req) {
         // Flat, alongside the nested summary: the opening picker on the row
         // needs an id to compare against, not an object to dig through.
         requirementId: c.requirementId,
+        // What they have actually applied to. `requirement` above is the ONE
+        // opening they are being worked for; this is all of them.
+        applicationCount: c._count.applications,
+        applications: (Array.isArray(c.applications) ? c.applications : []).map((a) => ({
+          id: a.id,
+          status: a.status,
+          appliedAt: a.appliedAt,
+          source: a.source,
+          selfReported: a.selfReported,
+          requirementId: a.requirementId,
+          designation: a.requirement?.designation || null,
+          clientName: a.requirement?.client?.name || null,
+        })),
         requirement: c.requirement && {
           id: c.requirement.id,
           designation: c.requirement.designation,

@@ -7,12 +7,42 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
-import { hoursWorked, summariseAttendance } from "@/lib/payroll";
+import { hoursWorked, summariseAttendance, MAX_SHIFT_HOURS } from "@/lib/payroll";
 import { istDay, istMonth, monthRange, timeLabel } from "@/lib/day";
 
 // Only handlers and segment config may be exported from a route file.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const DAY_MS = 86400000;
+
+/**
+ * The locked-month guard, in one place.
+ *
+ * BC-09: this check used to live only in the manager branch, physically below
+ * the self check-in/out branch, which returns before ever reaching it. So a
+ * manager was blocked from touching a locked month and the employee was not —
+ * the person whose pay it is could still change the attendance behind a payslip
+ * that had already been issued. It is now called for every attendance write,
+ * against the month of the row actually being modified (which, for an overnight
+ * check-out, may be last month).
+ */
+async function lockedMonth(month) {
+  const run = await prisma.payrollRun.findUnique({ where: { month } });
+  return run && run.status !== "draft" ? run : null;
+}
+
+function lockedResponse(month, run) {
+  return NextResponse.json(
+    { error: `${month} payroll is ${run.status}. Reopen it before changing attendance for that month.` },
+    { status: 409 }
+  );
+}
+
+/** "2026-09" for a UTC-midnight day Date. */
+function monthOf(day) {
+  return `${day.getUTCFullYear()}-${String(day.getUTCMonth() + 1).padStart(2, "0")}`;
+}
 
 export async function GET(req) {
   const gate = await requireCapability("attendance.own");
@@ -74,6 +104,36 @@ export async function GET(req) {
   const today = istDay();
   const mine = withHours.find((r) => r.userId === user.id && r.day.getTime() === today.getTime()) || null;
 
+  // The open shift this person can still close, which is NOT always today's
+  // row: a night shift started yesterday at 23:00 is closed after midnight.
+  // Queried outside the month filter on purpose — on the 1st, the shift being
+  // closed belongs to last month. Without this the Check out button stays
+  // disabled and the API fix for the overnight case is unreachable.
+  const yesterday = new Date(today.getTime() - DAY_MS);
+  const openRow = await prisma.attendance.findFirst({
+    where: {
+      userId: user.id,
+      day: { in: [today, yesterday] },
+      checkIn: { not: null },
+      checkOut: null,
+    },
+    orderBy: { day: "desc" },
+  });
+
+  let openShift = null;
+  if (openRow) {
+    const elapsed = (Date.now() - new Date(openRow.checkIn).getTime()) / 3600000;
+    openShift = {
+      day: openRow.day.toISOString().slice(0, 10),
+      checkIn: openRow.checkIn,
+      fromPreviousDay: openRow.day.getTime() !== today.getTime(),
+      hoursOpen: Math.round(elapsed * 10) / 10,
+      // Past the bound it is a forgotten check-out, and the person needs a
+      // manager rather than a button that will refuse them.
+      canCheckOut: elapsed <= MAX_SHIFT_HOURS,
+    };
+  }
+
   return NextResponse.json({
     month,
     rows: withHours,
@@ -83,6 +143,8 @@ export async function GET(req) {
     canEdit: can(user.role, "attendance.edit"),
     today: today.toISOString().slice(0, 10),
     mine,
+    openShift,
+    maxShiftHours: MAX_SHIFT_HOURS,
     me: user.id,
   });
 }
@@ -104,20 +166,23 @@ export async function POST(req) {
   if (b.action === "in" || b.action === "out") {
     const day = istDay();
     const now = new Date();
-    const existing = await prisma.attendance.findUnique({
+    const today = await prisma.attendance.findUnique({
       where: { userId_day: { userId: user.id, day } },
     });
 
     if (b.action === "in") {
-      if (existing?.checkIn) {
+      const run = await lockedMonth(monthOf(day));
+      if (run) return lockedResponse(monthOf(day), run);
+
+      if (today?.checkIn) {
         return NextResponse.json(
-          { error: `You already checked in at ${timeLabel(existing.checkIn)}.`, row: existing },
+          { error: `You already checked in at ${timeLabel(today.checkIn)}.`, row: today },
           { status: 409 }
         );
       }
-      const row = existing
+      const row = today
         ? await prisma.attendance.update({
-            where: { id: existing.id },
+            where: { id: today.id },
             data: { checkIn: now, status: "present" },
           })
         : await prisma.attendance.create({
@@ -126,24 +191,76 @@ export async function POST(req) {
       return NextResponse.json({ row, message: `Checked in at ${timeLabel(now)}.` });
     }
 
-    if (!existing?.checkIn) {
+    // ── checking out ────────────────────────────────────────────────────────
+    //
+    // BC-09: a check-out used to resolve against istDay() alone. Attendance is
+    // unique on (userId, day), so a shift that starts at 23:00 and ends at
+    // 01:00 looked up the NEW date, found nothing, and told the person "You
+    // have not checked in today" — leaving the previous day permanently
+    // incomplete at zero hours. On a desk that runs night shifts that is not an
+    // edge case, it is most of the week.
+    //
+    // So: prefer an open check-in on today's row; otherwise fall back to
+    // yesterday's row if it is still open and the shift is within the same
+    // 16-hour bound that hoursWorked uses. Anything longer is a forgotten
+    // check-out and is left to a manager correction rather than guessed at.
+    const yesterday = new Date(day.getTime() - DAY_MS);
+    let target = null;
+    let targetDay = day;
+
+    if (today?.checkIn && !today.checkOut) {
+      target = today;
+    } else {
+      const prior = await prisma.attendance.findUnique({
+        where: { userId_day: { userId: user.id, day: yesterday } },
+      });
+      if (prior?.checkIn && !prior.checkOut) {
+        const elapsed = (now.getTime() - new Date(prior.checkIn).getTime()) / 3600000;
+        if (elapsed <= MAX_SHIFT_HOURS) {
+          target = prior;
+          targetDay = yesterday;
+        } else {
+          // Say what is actually wrong. "You have not checked in today" sends
+          // people to a manager with the wrong problem.
+          return NextResponse.json(
+            {
+              error: `Your check-in from ${yesterday.toISOString().slice(0, 10)} at ${timeLabel(prior.checkIn)} was never closed and is now more than ${MAX_SHIFT_HOURS} hours ago. A manager needs to correct that day.`,
+            },
+            { status: 409 }
+          );
+        }
+      }
+    }
+
+    if (!target) {
+      if (today?.checkOut) {
+        return NextResponse.json(
+          { error: `You already checked out at ${timeLabel(today.checkOut)}.`, row: today },
+          { status: 409 }
+        );
+      }
       return NextResponse.json({ error: "You have not checked in today." }, { status: 400 });
     }
-    if (existing.checkOut) {
-      return NextResponse.json(
-        { error: `You already checked out at ${timeLabel(existing.checkOut)}.`, row: existing },
-        { status: 409 }
-      );
-    }
+
+    // The guard, applied to the month of the row being written — for an
+    // overnight shift on the 1st, that is last month, and last month is exactly
+    // the one likely to be locked.
+    const month = monthOf(targetDay);
+    const run = await lockedMonth(month);
+    if (run) return lockedResponse(month, run);
+
     const row = await prisma.attendance.update({
-      where: { id: existing.id },
+      where: { id: target.id },
       data: { checkOut: now },
     });
     const h = hoursWorked(row.checkIn, row.checkOut);
+    const overnight = targetDay.getTime() !== day.getTime();
     return NextResponse.json({
       row,
       message: h == null
-        ? "Checked out — but that is more than 16 hours, so the day needs a manager to correct it."
+        ? `Checked out — but that is more than ${MAX_SHIFT_HOURS} hours, so the day needs a manager to correct it.`
+        : overnight
+        ? `Checked out at ${timeLabel(now)} — ${h} hours on ${targetDay.toISOString().slice(0, 10)}.`
         : `Checked out at ${timeLabel(now)} — ${h} hours.`,
     });
   }
@@ -167,7 +284,12 @@ export async function POST(req) {
     return NextResponse.json({ error: "You cannot mark attendance for a day that has not happened." }, { status: 400 });
   }
 
-  const STATUSES = ["present", "leave", "holiday", "week-off", "absent", "half-day"];
+  // "unpaid-leave" is explicit rather than implied. Under the fixed-monthly
+  // rule the only statuses that cost anyone money are the ones somebody
+  // deliberately chose, so leave that is NOT paid has to be sayable — otherwise
+  // it gets recorded as "leave" (paid) or as "absent" (which reads as
+  // unauthorised on the sheet, and means something different in a dispute).
+  const STATUSES = ["present", "leave", "holiday", "week-off", "absent", "unpaid-leave", "half-day"];
   const status = String(b.status || "present");
   if (!STATUSES.includes(status)) {
     return NextResponse.json({ error: `Status must be one of: ${STATUSES.join(", ")}` }, { status: 400 });
@@ -183,15 +305,11 @@ export async function POST(req) {
 
   // A month that has been locked is a month that has been paid. Changing its
   // attendance afterwards makes the payslip and the sheet disagree, and the
-  // payslip is the one the person is holding.
+  // payslip is the one the person is holding. Same guard the self branch above
+  // now runs — one rule, both paths.
   const month = dayStr.slice(0, 7);
-  const run = await prisma.payrollRun.findUnique({ where: { month } });
-  if (run && run.status !== "draft") {
-    return NextResponse.json(
-      { error: `${month} payroll is ${run.status}. Reopen it before changing attendance for that month.` },
-      { status: 409 }
-    );
-  }
+  const run = await lockedMonth(month);
+  if (run) return lockedResponse(month, run);
 
   const data = {
     status,

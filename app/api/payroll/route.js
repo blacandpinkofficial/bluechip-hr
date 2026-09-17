@@ -13,6 +13,12 @@
 // Revenue is attributed to the month the candidate JOINED, not the month they
 // were selected. A selection is a promise; a joining is money. Paying incentive
 // on selections means paying for candidates who never turned up.
+//
+// Base pay is the fixed monthly rule in lib/payroll.js: full salary, less only
+// unpaid absence. Locked runs are NEVER recomputed, so months locked before
+// that rule came in keep the figures they were locked with, calculated under
+// the older hours-ratio rule. That is deliberate — a payslip somebody has
+// already been paid from does not get quietly restated.
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
@@ -23,12 +29,20 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 async function computeMonth(month, range) {
-  const [users, structures, rules, attendance, placements] = await Promise.all([
-    prisma.user.findMany({
-      where: { active: true },
-      select: { id: true, name: true, role: true, email: true },
-      orderBy: { name: "asc" },
-    }),
+  // BC-08: what this month's payroll needs is everyone who WAS EMPLOYED in it,
+  // which is not the same question as who can still log in.
+  //
+  // This used to select `where: { active: true }`. Deactivate a leaver on their
+  // last day — exactly what a manager does — and they vanished from the
+  // unlocked month they had actually worked, silently, with no row and no
+  // warning. That is the most direct way for a real person not to get paid.
+  //
+  // `active` belongs on the roster screen. Here, eligibility is "has payable
+  // records overlapping this month": attendance, a placement that joined, or an
+  // already-locked payroll item. Deactivating someone now removes them from
+  // NEXT month, once they have stopped generating records, which is what
+  // deactivating is supposed to mean.
+  const [structures, rules, attendance, placements, priorItems] = await Promise.all([
     // Every structure effective on or before the END of the month. The one in
     // force is the latest of those — a raise dated mid-month applies to the
     // whole month, which is the simple rule and the one people expect.
@@ -45,7 +59,22 @@ async function computeMonth(month, range) {
       where: { joinedOn: { gte: range.from, lt: range.to }, droppedOn: null },
       select: { recruiterId: true, revenue: true },
     }),
+    prisma.payrollItem.findMany({
+      where: { run: { month } },
+      select: { userId: true },
+    }),
   ]);
+
+  const involved = new Set();
+  for (const a of attendance) involved.add(a.userId);
+  for (const p of placements) if (p.recruiterId) involved.add(p.recruiterId);
+  for (const i of priorItems) involved.add(i.userId);
+
+  const users = await prisma.user.findMany({
+    where: { OR: [{ active: true }, { id: { in: [...involved] } }] },
+    select: { id: true, name: true, role: true, email: true, active: true },
+    orderBy: { name: "asc" },
+  });
 
   const structureFor = new Map();
   for (const s of structures) structureFor.set(s.userId, s); // ascending, so last wins
@@ -88,6 +117,9 @@ async function computeMonth(month, range) {
     return {
       ...slip,
       role: u.role,
+      // Present so the screen can mark a leaver rather than quietly listing
+      // them as if they were still on the desk.
+      activeUser: u.active,
       hasStructure: !!structure,
       ruleName: rule?.name || null,
       // Said plainly rather than shown as ₹0, which reads as "earned nothing".
@@ -147,17 +179,29 @@ export async function GET(req) {
       presentDays: i.presentDays,
       paidLeaveDays: i.paidLeaveDays,
       absentDays: i.absentDays,
-      incompleteDays: 0,
+      // BC-07: these two were hardcoded 0 / false, because PayrollItem had no
+      // column for them. The effect was that a forgotten check-out was paid as
+      // zero hours AND the locked screen then asserted the month was clean —
+      // the warning vanished at the exact moment it became unfixable. They are
+      // persisted at lock time now, so the locked view keeps telling the truth.
+      incompleteDays: i.incompleteDays,
+      needsAttention: i.needsAttention,
       overtimeHours: 0,
       earnedBasic: i.earnedBasic,
-      proRataPct: i.standardHours ? Math.round(Math.min(i.workedHours / i.standardHours, 1) * 1000) / 10 : 0,
+      // Unpaid days as frozen. Older runs locked under the superseded
+      // hours-ratio rule have no unpaid-day concept; absentDays is what was
+      // stored and it is reported as-is, never recomputed.
+      unpaidDays: i.absentDays,
       incentive: i.incentive,
       incentiveBasis: i.incentiveBasis,
       joinings: i.joinings,
       revenue: i.revenue,
       deductions: i.deductions,
       netPay: i.netPay,
-      needsAttention: false,
+      // Every figure on a locked row is a stored copy. The screen says so
+      // rather than implying these were recalculated under today's rule.
+      frozen: true,
+      payBasis: "Frozen at lock time — not recalculated.",
       hasStructure: true,
       blocker: null,
     }));
@@ -267,6 +311,7 @@ export async function POST(req) {
         {
           error: `${month} has not finished yet. Locking now freezes the figures as they stand today.`,
           needsConfirmation: true,
+          confirmKey: "confirmEarly",
         },
         { status: 409 }
       );
@@ -280,7 +325,44 @@ export async function POST(req) {
       {
         error: `${missing.length} ${missing.length === 1 ? "person has" : "people have"} no salary set: ${missing.map((m) => m.name).join(", ")}. They would be locked in at zero.`,
         needsConfirmation: true,
+        confirmKey: "confirmMissing",
         missing: missing.map((m) => m.name),
+      },
+      { status: 409 }
+    );
+  }
+
+  // BC-07: the warning that locking used to hide from itself.
+  //
+  // needsAttention has always been computed and shown on screen, and the lock
+  // endpoint has never once looked at it. A month with forgotten check-outs
+  // could be locked without a word, and the locked screen then reported the
+  // month as clean. Unresolved attendance now blocks the lock, and overriding
+  // it takes a written reason that is stored on the run and in the audit log —
+  // if a month is going to be locked dirty, it will at least say who decided
+  // that and why.
+  const unresolved = rows.filter((r) => r.needsAttention && !r.blocker);
+  const overrideReason = String(b.overrideReason || "").trim();
+  if (unresolved.length && !b.confirmIncomplete) {
+    const totalDays = unresolved.reduce((s, r) => s + (r.incompleteDays || 0), 0);
+    return NextResponse.json(
+      {
+        error: `${unresolved.length} ${unresolved.length === 1 ? "person has" : "people have"} attendance that is not resolved (${totalDays} day${totalDays === 1 ? "" : "s"} with missing times): ${unresolved.map((m) => m.name).join(", ")}. Fix those days, or give a reason for locking the month anyway.`,
+        needsConfirmation: true,
+        confirmKey: "confirmIncomplete",
+        needsReason: true,
+        unresolved: unresolved.map((m) => ({ name: m.name, incompleteDays: m.incompleteDays })),
+      },
+      { status: 409 }
+    );
+  }
+  if (unresolved.length && b.confirmIncomplete && overrideReason.length < 10) {
+    return NextResponse.json(
+      {
+        error: "Locking a month with unresolved attendance needs a reason — a few words about why these days are being left as they are.",
+        needsConfirmation: true,
+        confirmKey: "confirmIncomplete",
+        needsReason: true,
       },
       { status: 409 }
     );
@@ -288,14 +370,21 @@ export async function POST(req) {
 
   const deductions = b.deductions && typeof b.deductions === "object" ? b.deductions : {};
 
+  // The override is part of the permanent record of the run, not a transient
+  // click. It goes on the run note so it is visible next to the figures.
+  const overrideNote = unresolved.length
+    ? `Locked with ${unresolved.length} unresolved attendance row(s). Reason: ${overrideReason}`
+    : null;
+  const runNote = [b.note || null, overrideNote].filter(Boolean).join(" — ") || null;
+
   const run = await prisma.$transaction(async (tx) => {
     const r = existing
       ? await tx.payrollRun.update({
           where: { id: existing.id },
-          data: { status: "locked", lockedAt: new Date(), lockedById: user.id, note: b.note || null },
+          data: { status: "locked", lockedAt: new Date(), lockedById: user.id, note: runNote },
         })
       : await tx.payrollRun.create({
-          data: { month, status: "locked", lockedAt: new Date(), lockedById: user.id, note: b.note || null },
+          data: { month, status: "locked", lockedAt: new Date(), lockedById: user.id, note: runNote },
         });
 
     await tx.payrollItem.deleteMany({ where: { runId: r.id } });
@@ -312,6 +401,10 @@ export async function POST(req) {
           presentDays: row.presentDays,
           paidLeaveDays: row.paidLeaveDays,
           absentDays: row.absentDays,
+          // BC-07: frozen with the rest of the row, so the locked view can say
+          // what was wrong with the month instead of asserting it was clean.
+          incompleteDays: row.incompleteDays,
+          needsAttention: row.needsAttention,
           earnedBasic: row.earnedBasic,
           incentive: row.incentive,
           incentiveBasis: row.incentiveBasis,
@@ -326,8 +419,21 @@ export async function POST(req) {
   });
 
   await prisma.auditLog.create({
-    data: { userId: user.id, action: "update", entity: "PayrollRun", entityId: run.id, summary: `${month} locked` },
+    data: {
+      userId: user.id,
+      action: "update",
+      entity: "PayrollRun",
+      entityId: run.id,
+      summary: unresolved.length
+        ? `${month} locked with ${unresolved.length} unresolved attendance row(s) — ${overrideReason}`
+        : `${month} locked`,
+    },
   }).catch(() => {});
 
-  return NextResponse.json({ message: `${month} locked. The figures will not move again.`, status: "locked" });
+  return NextResponse.json({
+    message: unresolved.length
+      ? `${month} locked with ${unresolved.length} unresolved row(s); the reason is on the run. The figures will not move again.`
+      : `${month} locked. The figures will not move again.`,
+    status: "locked",
+  });
 }

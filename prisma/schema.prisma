@@ -62,6 +62,7 @@ model User {
   // Website enquiries this person triaged. A virtual field — the foreign key
   // lives on RequirementLead, so this adds no column to User.
   leadsReviewed    RequirementLead[] @relation("LeadReviewer")
+  paymentsRecorded Payment[]
 
   @@index([active, role])
 }
@@ -111,9 +112,9 @@ model Client {
   // same state as the company is intra-state, anywhere else is inter-state.
   // Left null rather than defaulted — guessing a client's state picks their tax
   // treatment for them.
-  gstin       String?
-  state       String?
-  address     String?
+  gstin   String?
+  state   String?
+  address String?
 
   notes        ClientNote[]
   requirements Requirement[]
@@ -192,9 +193,9 @@ model Requirement {
 
   publishOnline Boolean @default(false)
 
-  status   String   @default("open") // open | hold | filled | closed
-  priority String   @default("normal") // low | normal | high
-  openedAt DateTime @default(now())
+  status   String    @default("open") // open | hold | filled | closed
+  priority String    @default("normal") // low | normal | high
+  openedAt DateTime  @default(now())
   closedAt DateTime?
 
   candidates  Candidate[]
@@ -204,7 +205,12 @@ model Requirement {
 
   // The website enquiry this opening was created from, if it came in that way.
   // Virtual — the foreign key is on RequirementLead, so no column is added here.
-  lead        RequirementLead?
+  lead RequirementLead?
+
+  // Every public application to this opening. Separate from Candidate because
+  // one person can apply to several openings, and Candidate.requirementId can
+  // only hold one.
+  applications Application[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -289,20 +295,20 @@ model RequirementLead {
 // today the same candidate appears on four different days as four rows and
 // nobody can tell it is one person.
 model Candidate {
-  id     String  @id @default(cuid())
-  name   String
-  phone  String
-  email  String?
+  id       String  @id @default(cuid())
+  name     String
+  phone    String
+  email    String?
   altPhone String?
 
-  designation  String? // what they do now
-  location     String?
-  expMonths    Int?
-  currentCtc   Int? // monthly take-home, rupees
-  expectedCtc  Int?
-  noticeDays   Int?
-  source       String? // naukri | referral | walk-in | database | linkedin | whatsapp
-  skills       String?
+  designation String? // what they do now
+  location    String?
+  expMonths   Int?
+  currentCtc  Int? // monthly take-home, rupees
+  expectedCtc Int?
+  noticeDays  Int?
+  source      String? // naukri | referral | walk-in | database | linkedin | whatsapp
+  skills      String?
 
   // Knockout answers, asked once and remembered. Matched against the
   // requirement's criteria so a mismatch surfaces before anyone books a slot.
@@ -320,8 +326,8 @@ model Candidate {
   ownerId String?
   owner   User?   @relation("CandidateOwner", fields: [ownerId], references: [id])
 
-  resumeKey   String? // object-storage key, if a file was uploaded
-  resumeText  String? // extracted text, for search
+  resumeKey  String? // object-storage key, if a file was uploaded
+  resumeText String? // extracted text, for search
 
   lastContactedAt DateTime?
   // The single outstanding callback, rewritten on every logged call. Derived
@@ -332,10 +338,11 @@ model Candidate {
   callCount       Int       @default(0) // denormalised for list sorting; CandidateCall is the truth
   archived        Boolean   @default(false)
 
-  calls       CandidateCall[]
-  interviews  Interview[]
-  placements  Placement[]
-  submissions Submission[]
+  calls        CandidateCall[]
+  interviews   Interview[]
+  placements   Placement[]
+  submissions  Submission[]
+  applications Application[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -360,9 +367,9 @@ model CandidateCall {
   userId      String
   user        User      @relation(fields: [userId], references: [id])
 
-  calledAt DateTime @default(now())
-  outcome  String // connected | no-answer | busy | wrong-number | not-interested | callback
-  notes    String?
+  calledAt   DateTime  @default(now())
+  outcome    String // connected | no-answer | busy | wrong-number | not-interested | callback
+  notes      String?
   followUpAt DateTime?
 
   @@index([userId, calledAt])
@@ -435,10 +442,10 @@ model Placement {
   // Terms FROZEN at selection, copied from the requirement or the client.
   // Deliberately not a lookup: when Blue Chip renegotiates a rate with Omega
   // next year, last year's placements must not silently re-price themselves.
-  feeType  String // percent | flat
-  feeBps   Int?
-  feeFlat  Int?
-  revenue  Int // computed once from the frozen terms, then stored
+  feeType String // percent | flat
+  feeBps  Int?
+  feeFlat Int?
+  revenue Int // computed once from the frozen terms, then stored
 
   invoiceStatus String    @default("pending") // pending | raised | paid | written-off
   invoiceNo     String?
@@ -451,6 +458,21 @@ model Placement {
   replacementUntil DateTime?
   droppedOn        DateTime?
   dropReason       String?
+
+  // Which invoice currently OWNS this placement's revenue. Null = unbilled and
+  // claimable. This is what makes "raise an invoice" safe under concurrency:
+  // the transaction claims rows with updateMany(where: { billedByInvoiceId:
+  // null }) and aborts unless it claimed every one it intended to, so two
+  // operators clicking at the same moment cannot both bill the same joining.
+  // A check-then-insert cannot do this — both callers read "unbilled" before
+  // either writes.
+  //
+  // Cancelling an invoice clears this, which is what allows deliberate
+  // re-billing. That is why it is a nullable pointer rather than a unique
+  // index on InvoiceLine: historical lines must survive on the cancelled
+  // invoice, and a plain @@unique would make the placement permanently
+  // unbillable once cancelled.
+  billedByInvoiceId String?
 
   invoiceLines InvoiceLine[]
 
@@ -467,6 +489,7 @@ model Placement {
   @@index([clientId, joinedOn])
   @@index([invoiceStatus])
   @@index([joinedOn])
+  @@index([billedByInvoiceId])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -477,19 +500,19 @@ model Placement {
 // data — how long a replacement is owed for, what the house credit period is —
 // and which every placement copies at the moment it is created.
 model Setting {
-  id                 String   @id @default("singleton")
-  companyName        String   @default("Blue Chip HR Solutions Pvt. Ltd.")
+  id                 String @id @default("singleton")
+  companyName        String @default("Blue Chip HR Solutions Pvt. Ltd.")
   // Free-replacement window, in days from the joining date. 90 is the usual
   // term in Indian staffing; 30 and 45 both exist. It is stored rather than
   // hard-coded because it is a commercial term, and commercial terms change.
-  replacementDays    Int      @default(90)
-  defaultPaymentDays Int      @default(30)
+  replacementDays    Int    @default(90)
+  defaultPaymentDays Int    @default(30)
 
   // Public careers page at /jobs. Off until someone turns it on, because
   // turning it on publishes pay ranges and client names to the internet.
-  careersEnabled     Boolean  @default(false)
-  careersIntro       String?
-  careersEmail       String?
+  careersEnabled Boolean @default(false)
+  careersIntro   String?
+  careersEmail   String?
 
   // Somewhere to connect an AI provider later. The key is stored here and
   // NEVER returned to the browser — the settings API sends only whether one is
@@ -497,15 +520,15 @@ model Setting {
   // Who the invoice is FROM. No defaults invented — an invoice with a made-up
   // GSTIN is worse than one that refuses to be raised until someone types the
   // real number in.
-  gstin              String?
-  stateName          String?
-  stateCode          String?  // "33" for Tamil Nadu
-  addressLine        String?
-  bankName           String?
-  bankAccount        String?
-  bankIfsc           String?
-  invoicePrefix      String   @default("BCH")
-  gstBps             Int      @default(1800) // 18% on recruitment services
+  gstin         String?
+  stateName     String?
+  stateCode     String? // "33" for Tamil Nadu
+  addressLine   String?
+  bankName      String?
+  bankAccount   String?
+  bankIfsc      String?
+  invoicePrefix String  @default("BCH")
+  gstBps        Int     @default(1800) // 18% on recruitment services
 
   // Outbound email. The password is stored here and NEVER returned to a
   // browser, same rule as the AI key.
@@ -516,11 +539,11 @@ model Setting {
   smtpFrom     String?
   smtpSecure   Boolean @default(true)
 
-  aiEnabled          Boolean  @default(false)
-  aiProvider         String?  // anthropic | openai
-  aiApiKey           String?
+  aiEnabled  Boolean @default(false)
+  aiProvider String? // anthropic | openai
+  aiApiKey   String?
 
-  updatedAt          DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 }
 
 // Anything the desk needs to look up: client process notes, a handover before
@@ -530,25 +553,25 @@ model Setting {
 // backup and every restore of the whole database slower, and the database is
 // the thing that must come back fastest after a failure.
 model Document {
-  id          String   @id @default(cuid())
-  title       String
-  kind        String   @default("note") // note | handover | process | training | client | policy
-  body        String? // for typed notes and handovers — searchable as-is
+  id         String   @id @default(cuid())
+  title      String
+  kind       String   @default("note") // note | handover | process | training | client | policy
+  body       String? // for typed notes and handovers — searchable as-is
   // For uploads. storageKey is a path relative to the uploads directory, never
   // a path the client supplies.
-  storageKey  String?
-  filename    String?
-  mimeType    String?
-  bytes       Int?
-  tags        String? // comma separated
-  clientId    String?
-  client      Client?  @relation(fields: [clientId], references: [id])
-  authorId    String?
-  author      User?    @relation(fields: [authorId], references: [id])
-  pinned      Boolean  @default(false)
-  archived    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  storageKey String?
+  filename   String?
+  mimeType   String?
+  bytes      Int?
+  tags       String? // comma separated
+  clientId   String?
+  client     Client?  @relation(fields: [clientId], references: [id])
+  authorId   String?
+  author     User?    @relation(fields: [authorId], references: [id])
+  pinned     Boolean  @default(false)
+  archived   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@index([kind, archived])
   @@index([clientId])
@@ -597,17 +620,17 @@ model ImportBatch {
 // belongs to" separately from the check-in instant is what makes a night shift
 // that crosses midnight still belong to the shift it started in.
 model Attendance {
-  id       String   @id @default(cuid())
+  id       String    @id @default(cuid())
   userId   String
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  day      DateTime @db.Date
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day      DateTime  @db.Date
   checkIn  DateTime?
   checkOut DateTime?
 
   // present | leave | holiday | week-off | absent | half-day
   // leave/holiday/week-off are PAID and contribute a standard day.
-  status   String   @default("present")
-  note     String?
+  status String  @default("present")
+  note   String?
 
   // Who marked it, when it was not the person themselves. A manager correcting
   // a forgotten check-out should be visible as a correction, not indistinguishable
@@ -628,16 +651,16 @@ model Attendance {
 // recomputed from the figures that were true last month. Editing the salary in
 // place is how a re-run of March quietly pays April's rate.
 model SalaryStructure {
-  id                 String   @id @default(cuid())
-  userId             String
-  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  monthlyGross       Int // rupees
-  standardHoursPerDay Int     @default(8)
-  workingDaysPerWeek  Int     @default(6)
-  effectiveFrom      DateTime @db.Date
-  note               String?
-  createdById        String?
-  createdAt          DateTime @default(now())
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthlyGross        Int // rupees
+  standardHoursPerDay Int      @default(8)
+  workingDaysPerWeek  Int      @default(6)
+  effectiveFrom       DateTime @db.Date
+  note                String?
+  createdById         String?
+  createdAt           DateTime @default(now())
 
   @@index([userId, effectiveFrom])
 }
@@ -664,15 +687,15 @@ model IncentiveRule {
 // after that the FIGURES ARE FROZEN into PayrollItem rows. A payslip that
 // changes after it was handed over is not a payslip.
 model PayrollRun {
-  id        String   @id @default(cuid())
-  month     String   @unique // "2026-09"
-  status    String   @default("draft") // draft | locked | paid
-  lockedAt  DateTime?
+  id         String    @id @default(cuid())
+  month      String    @unique // "2026-09"
+  status     String    @default("draft") // draft | locked | paid
+  lockedAt   DateTime?
   lockedById String?
-  paidOn    DateTime?
-  note      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  paidOn     DateTime?
+  note       String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   items PayrollItem[]
 }
@@ -689,16 +712,23 @@ model PayrollItem {
   monthlyGross   Int
   standardHours  Float
   workedHours    Float
-  presentDays    Int @default(0)
-  paidLeaveDays  Int @default(0)
-  absentDays     Int @default(0)
+  presentDays    Int     @default(0)
+  paidLeaveDays  Int     @default(0)
+  absentDays     Int     @default(0)
   earnedBasic    Int
-  incentive      Int @default(0)
+  incentive      Int     @default(0)
   incentiveBasis String?
-  joinings       Int @default(0)
-  revenue        Int @default(0)
-  deductions     Int @default(0)
+  joinings       Int     @default(0)
+  revenue        Int     @default(0)
+  deductions     Int     @default(0)
   netPay         Int
+
+  // Why this row might be wrong, frozen with the rest of it. Locking a month
+  // used to set these to 0/false on read, so a forgotten check-out was paid as
+  // zero hours AND the locked screen then asserted the month was clean — the
+  // warning disappeared at the exact moment it stopped being fixable.
+  incompleteDays Int     @default(0)
+  needsAttention Boolean @default(false)
 
   @@unique([runId, userId])
   @@index([userId])
@@ -710,17 +740,17 @@ model PayrollItem {
 // candidate back?" happens inside the app next to the candidate, instead of on
 // a personal WhatsApp where it is lost when someone leaves.
 model ChatMessage {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   authorId  String
-  author    User     @relation("ChatAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  author    User      @relation("ChatAuthor", fields: [authorId], references: [id], onDelete: Cascade)
   toUserId  String?
-  toUser    User?    @relation("ChatRecipient", fields: [toUserId], references: [id], onDelete: Cascade)
+  toUser    User?     @relation("ChatRecipient", fields: [toUserId], references: [id], onDelete: Cascade)
   body      String
   // Optional pointer at what is being discussed, so a message can be opened.
   refType   String? // candidate | requirement | client | placement
   refId     String?
   deletedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([toUserId, createdAt])
   @@index([authorId, createdAt])
@@ -751,9 +781,9 @@ model ChatRead {
 // everyone a second copy of every reminder, they stop trusting the list, and
 // the list stops working.
 model Reminder {
-  id      String @id @default(cuid())
-  userId  String
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // follow-up | interview | guarantee | invoice-due | attendance | no-response
   kind    String
@@ -766,9 +796,9 @@ model Reminder {
   refType String? // candidate | interview | placement | invoice | submission
   refId   String?
 
-  status  String    @default("open") // open | done | dismissed
-  doneAt  DateTime?
-  createdAt DateTime @default(now())
+  status    String    @default("open") // open | done | dismissed
+  doneAt    DateTime?
+  createdAt DateTime  @default(now())
 
   @@unique([userId, kind, refId, dueOn])
   @@index([userId, status, dueOn])
@@ -848,30 +878,68 @@ model Invoice {
   // Copied at issue, never joined. An invoice is a legal document about a
   // moment; if the client later changes address or GSTIN, the invoice already
   // sent must still say what it said.
-  billToName   String
-  billToGstin  String?
-  billToState  String?
+  billToName    String
+  billToGstin   String?
+  billToState   String?
   billToAddress String?
 
-  status   String    @default("draft") // draft | raised | paid | part-paid | written-off | cancelled
-  paidOn   DateTime?
-  paidPaise Int      @default(0)
-  notes    String?
+  status    String    @default("draft") // draft | raised | paid | part-paid | written-off | cancelled
+  paidOn    DateTime?
+  paidPaise Int       @default(0)
+  notes     String?
 
   createdById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  lines InvoiceLine[]
+  lines    InvoiceLine[]
+  payments Payment[]
 
   @@index([clientId, issuedOn])
   @@index([status, dueOn])
 }
 
+// Money actually received. One row per receipt, never updated, never deleted.
+//
+// paidPaise on Invoice used to BE the record: the handler read it, added the
+// new amount in JavaScript and wrote the total back. Two receipts keyed at the
+// same moment both read the old figure and the second one overwrote the first,
+// so the money was simply gone — and because nothing recorded the individual
+// receipts there was no way to notice, let alone reconstruct them. A retried
+// request counted twice for the same reason.
+//
+// So: the receipts are the truth and Invoice.paidPaise is a cached sum of
+// them, written in the same transaction. Reversing a mis-keyed receipt is a
+// new row with a negative amount, not an edit — an invoice ledger you can
+// correct by overwriting is one you cannot audit.
+model Payment {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  amountPaise Int // negative = a reversal of an earlier receipt
+  receivedOn  DateTime @db.Date
+  method      String? // neft | cheque | upi | cash | adjustment
+  reference   String? // UTR, cheque number, whatever the bank statement shows
+  note        String?
+
+  recordedById String?
+  recordedBy   User?   @relation(fields: [recordedById], references: [id])
+
+  // The client sends this with the request; a retry sends the same one. The
+  // unique index is what makes "record payment" safe to press twice, or to
+  // retry after a timeout that actually succeeded.
+  idempotencyKey String @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId, receivedOn])
+}
+
 model InvoiceLine {
-  id          String  @id @default(cuid())
+  id          String     @id @default(cuid())
   invoiceId   String
-  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   placementId String?
   placement   Placement? @relation(fields: [placementId], references: [id])
   description String
@@ -881,14 +949,58 @@ model InvoiceLine {
   @@index([placementId])
 }
 
+// One person applying to one opening.
+//
+// Candidate.requirementId can hold exactly one opening, so before this table a
+// known candidate applying to a second job hit the "already has an opening"
+// branch, nothing was written, and the site still said "thank you, we have
+// your application". The person believed they had applied; no recruiter ever
+// saw it. Nothing was broken in the code — there was simply nowhere to put a
+// second application.
+//
+// Candidate stays the master record of a person. This is the record of an act:
+// who applied, to what, when, and from where. The unique pair means a retried
+// submission is idempotent while a genuinely different opening is always kept.
+model Application {
+  id            String      @id @default(cuid())
+  candidateId   String
+  candidate     Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  requirementId String
+  requirement   Requirement @relation(fields: [requirementId], references: [id])
+
+  appliedAt DateTime @default(now())
+  source    String   @default("website") // website | walk-in | import | referral
+
+  // Where the desk has got to with it. Deliberately NOT the candidate's stage:
+  // a person can be shortlisted for one opening and rejected for another on
+  // the same day, and one stage field cannot say that.
+  status     String    @default("new") // new | reviewing | shortlisted | rejected | withdrawn
+  reviewedAt DateTime?
+  notes      String?
+
+  // Provenance. A public application is a stranger's claim about themselves
+  // until somebody checks it, and the record should say so rather than letting
+  // it quietly become desk data.
+  selfReported Boolean @default(true)
+  ip           String?
+  userAgent    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([candidateId, requirementId])
+  @@index([requirementId, status])
+  @@index([appliedAt])
+}
+
 // A practice call. The transcript is kept so a manager can read what was
 // actually said, and so a trainee can see their own earlier attempts — improving
 // is much easier to believe when you can read the call you made last week.
 model TrainingSession {
-  id         String  @id @default(cuid())
-  userId     String
-  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  personaKey String
+  id            String  @id @default(cuid())
+  userId        String
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  personaKey    String
   requirementId String?
 
   turnsJson  String  @default("[]") // [{ role: "trainee" | "candidate", text, at }]

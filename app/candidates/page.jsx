@@ -913,6 +913,14 @@ export default function CandidatesPage() {
             // Which after-the-call control this row currently has open, if any.
             const act = actRow && actRow.id === c.id ? actRow : null;
             const lastNote = c.lastCall && c.lastCall.notes ? c.lastCall.notes : "";
+            // Openings this person applied to that are NOT the one they are
+            // currently being worked for. Before Application rows existed a
+            // second application wrote nothing at all, so this line is the
+            // only place the second one has ever been visible.
+            const applied = Array.isArray(c.applications) ? c.applications : [];
+            const otherApplications = applied.filter(
+              (a) => a.requirementId && a.requirementId !== c.requirementId
+            );
             return (
               <div
                 key={c.id}
@@ -1105,6 +1113,23 @@ export default function CandidatesPage() {
                         <span className="text-amber-700">No opening yet</span>
                       )}
                     </span>
+                    {otherApplications.length > 0 && (
+                      <span
+                        className="text-violet-700 truncate max-w-[22rem]"
+                        title={otherApplications
+                          .map((a) => a.designation || "an opening")
+                          .join(", ")}
+                      >
+                        Also applied:{" "}
+                        {otherApplications
+                          .slice(0, 3)
+                          .map((a) => a.designation || "an opening")
+                          .join(", ")}
+                        {otherApplications.length > 3
+                          ? ` +${otherApplications.length - 3} more`
+                          : ""}
+                      </span>
+                    )}
                     <span className={c.nextFollowUpAt ? "text-sky-700" : "text-slate-400"}>
                       {c.nextFollowUpAt
                         ? `Call back ${whenShort(c.nextFollowUpAt)}`

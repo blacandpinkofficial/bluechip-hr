@@ -37,7 +37,31 @@ export async function GET(req, { params }) {
 
   const today = istDay();
 
-  const [calls, connects, interviews, placementsThisMonth, lineUps, followUps, submissions, allTimePlacements] =
+  // Two different questions about placements, asked separately because they
+  // have two different answers.
+  //
+  //   selectedThisMonth — the client said yes in this month
+  //   joinedThisMonth   — the candidate started work in this month
+  //
+  // A candidate selected on 28 September who starts on 3 October belongs to
+  // September by the first measure and October by the second, and the recruiter
+  // is paid their incentive in October: /api/payroll filters on joinedOn within
+  // the month. So "joined" on this page counts joinedOn too, to the same
+  // definition, and the recruiter's own screen and their payslip agree. Keeping
+  // only the selectedOn list would also lose the other half of the problem — a
+  // placement selected in August and joined in September appeared on NEITHER
+  // month's profile, because September's query never fetched it.
+  const [
+    calls,
+    connects,
+    interviews,
+    selectedThisMonth,
+    joinedThisMonth,
+    lineUps,
+    followUps,
+    submissions,
+    allTimePlacements,
+  ] =
     await Promise.all([
       prisma.candidateCall.count({ where: { userId, calledAt: { gte: range.from, lt: range.to } } }),
       // outcome === "connected", the same definition Reports uses. An exclusion
@@ -51,6 +75,8 @@ export async function GET(req, { params }) {
         where: { candidate: { is: { ownerId: userId } }, scheduledAt: { gte: range.from, lt: range.to } },
         select: { id: true, attended: true, outcome: true, scheduledAt: true },
       }),
+      // Selected this month. Its own measure, and a useful one: it is what the
+      // desk did, on the date it did it, before the notice period had its say.
       prisma.placement.findMany({
         where: { recruiterId: userId, selectedOn: { gte: range.from, lt: range.to } },
         include: {
@@ -59,6 +85,21 @@ export async function GET(req, { params }) {
           requirement: { select: { designation: true } },
         },
         orderBy: { selectedOn: "desc" },
+      }),
+      // Joined this month. Identical where-clause to /api/payroll's, on
+      // purpose — if these two ever need to change, they change together.
+      prisma.placement.findMany({
+        where: {
+          recruiterId: userId,
+          joinedOn: { gte: range.from, lt: range.to },
+          droppedOn: null,
+        },
+        include: {
+          candidate: { select: { name: true } },
+          client: { select: { name: true } },
+          requirement: { select: { designation: true } },
+        },
+        orderBy: { joinedOn: "desc" },
       }),
       // Live line-ups: an interview ahead of today with no outcome recorded.
       prisma.interview.findMany({
@@ -88,7 +129,8 @@ export async function GET(req, { params }) {
 
   const attended = interviews.filter((i) => i.attended === true).length;
   const selected = interviews.filter((i) => i.outcome === "selected").length;
-  const joinedThisMonth = placementsThisMonth.filter((p) => p.joinedOn && !p.droppedOn).length;
+  const joinedCount = joinedThisMonth.length;
+  const selectedCount = selectedThisMonth.length;
 
   const f = funnel({
     calls,
@@ -96,10 +138,25 @@ export async function GET(req, { params }) {
     lineUps: interviews.length,
     attended,
     selected,
-    joined: joinedThisMonth,
+    joined: joinedCount,
   });
 
   const seesMoney = can(user.role, "revenue.read") || userId === user.id;
+
+  // Explicitly-shaped, never the raw row. Both placement lists below use it,
+  // so they cannot drift into showing different columns.
+  const placementRow = (p) => ({
+    id: p.id,
+    candidate: p.candidate?.name,
+    client: p.client?.name,
+    designation: p.requirement?.designation || p.designation,
+    selectedOn: p.selectedOn,
+    joinedOn: p.joinedOn,
+    droppedOn: p.droppedOn,
+    // A recruiter may always see the fee on their OWN placement — it is what
+    // their incentive is calculated from. Someone else's is desk revenue.
+    revenue: seesMoney ? p.revenue : null,
+  });
 
   return NextResponse.json({
     person,
@@ -111,25 +168,26 @@ export async function GET(req, { params }) {
       calls, connects,
       lineUps: interviews.length,
       attended, selected,
-      joined: joinedThisMonth,
+      // Placements whose joinedOn falls in this month — the same set payroll
+      // pays incentive on. This is the headline "Joined in <month>" figure.
+      joined: joinedCount,
+      // Placements whose selectedOn falls in this month. A different number
+      // from the one above and deliberately so; it is what `closed` lists.
+      placementsSelected: selectedCount,
       submissions,
       followUpsDue: followUps,
     },
     funnel: f,
     weakest: weakestStage(f),
-    // Closed work, which is the point of the page.
-    closed: placementsThisMonth.map((p) => ({
-      id: p.id,
-      candidate: p.candidate?.name,
-      client: p.client?.name,
-      designation: p.requirement?.designation || p.designation,
-      selectedOn: p.selectedOn,
-      joinedOn: p.joinedOn,
-      droppedOn: p.droppedOn,
-      // A recruiter may always see the fee on their OWN placement — it is what
-      // their incentive is calculated from. Someone else's is desk revenue.
-      revenue: seesMoney ? p.revenue : null,
-    })),
+    // Which date each list below is keyed on, so a screen can label itself
+    // honestly rather than guessing.
+    basis: { closed: "selectedOn", joined: "joinedOn" },
+    // Closed work, which is the point of the page. Selected in this month —
+    // some of these will have joined in a later one.
+    closed: selectedThisMonth.map(placementRow),
+    // Joined in this month — some of these were selected in an earlier one,
+    // and until now they appeared on no month's profile at all.
+    joined: joinedThisMonth.map(placementRow),
     lineUps: lineUps.map((i) => ({
       id: i.id,
       candidate: i.candidate?.name,
