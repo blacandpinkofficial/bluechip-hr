@@ -313,115 +313,245 @@ export default function InvoicesPage() {
               <p className="text-sm text-slate-500 mt-1">Tick a placement above and raise the first one.</p>
             </div>
           ) : (
-            <div className="card overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
-                <thead className="bg-slate-50 text-left text-slate-500">
-                  <tr>
-                    <th className="p-3 font-medium">Number</th>
-                    <th className="p-3 font-medium">Client</th>
-                    <th className="p-3 font-medium">Issued</th>
-                    <th className="p-3 font-medium">Due</th>
-                    <th className="p-3 font-medium text-right">Total</th>
-                    <th className="p-3 font-medium text-right">Outstanding</th>
-                    <th className="p-3 font-medium">Status</th>
-                    <th className="p-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoices.map((inv) => {
-                    const row = ageingRowsOnPage.find((r) => r.id === inv.id);
-                    const outstanding = inv.totalPaise - (inv.paidPaise || 0);
-                    return (
-                      <Fragment key={inv.id}>
-                        <tr className="border-t border-slate-100">
-                          <td className="p-3 font-medium text-chip-900">{inv.number}</td>
-                          <td className="p-3">{inv.client?.name || inv.billToName}</td>
-                          <td className="p-3 text-slate-500">{dt(inv.issuedOn)}</td>
-                          <td className="p-3">
-                            {dt(inv.dueOn)}
-                            {row?.daysLate > 0 && (
-                              <div className="text-xs text-red-700">{row.daysLate} days late</div>
-                            )}
-                          </td>
-                          <td className="p-3 text-right tabular-nums">₹{paiseToString(inv.totalPaise)}</td>
-                          <td className="p-3 text-right tabular-nums">
-                            {outstanding > 0 ? `₹${paiseToString(outstanding)}` : "—"}
-                          </td>
-                          <td className="p-3">
-                            <span className={"text-[11px] px-2 py-0.5 rounded border " + (STATUS_TONE[inv.status] || STATUS_TONE.draft)}>
-                              {inv.status}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right whitespace-nowrap">
-                            <a href={`/invoices/${inv.id}/print`} target="_blank" rel="noopener noreferrer"
-                              className="text-xs text-slate-400 hover:text-chip-700 mr-2">Print</a>
-                            {data.canWrite && inv.status !== "cancelled" && (
-                              <button className="text-xs text-slate-400 hover:text-chip-700"
-                                onClick={() => openPayment(inv.id, outstanding)}>
-                                Record payment
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                        {payFor === inv.id && (
-                          <tr className="border-t border-slate-100 bg-slate-50">
-                            <td colSpan={8} className="p-4">
-                              <div className="flex flex-wrap items-end gap-3">
-                                <div>
-                                  <label htmlFor={`pay-${inv.id}`} className="label">Amount received (₹)</label>
-                                  <input id={`pay-${inv.id}`} className="input max-w-[12rem]" inputMode="decimal"
-                                    value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
-                                </div>
-                                <button className="btn-primary" disabled={busy}
-                                  onClick={() => savePayment(inv.id)}>
-                                  {saveLabel}
+            <>
+              {/* Two layouts over one list, not one layout that shrinks.
+                  The table was 760px wide with the actions in the last
+                  column, inside a horizontal scroller — so on a phone the
+                  visible part was the invoice number and the client, and
+                  "Record payment" was off the right-hand edge with nothing
+                  on screen to suggest it was there. Mohan records payments
+                  from his phone. Below md the same rows are cards with the
+                  action in the middle of the screen; the table is untouched
+                  above it, because on a laptop a table is the right shape
+                  for eight invoices at a glance. */}
+
+              {/* ── laptop and up ────────────────────────────────────────── */}
+              <div className="card overflow-x-auto hidden md:block">
+                <table className="w-full text-sm min-w-[760px]">
+                  <thead className="bg-slate-50 text-left text-slate-500">
+                    <tr>
+                      <th className="p-3 font-medium">Number</th>
+                      <th className="p-3 font-medium">Client</th>
+                      <th className="p-3 font-medium">Issued</th>
+                      <th className="p-3 font-medium">Due</th>
+                      <th className="p-3 font-medium text-right">Total</th>
+                      <th className="p-3 font-medium text-right">Outstanding</th>
+                      <th className="p-3 font-medium">Status</th>
+                      <th className="p-3" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoices.map((inv) => {
+                      const row = ageingRowsOnPage.find((r) => r.id === inv.id);
+                      const outstanding = inv.totalPaise - (inv.paidPaise || 0);
+                      return (
+                        <Fragment key={inv.id}>
+                          <tr className="border-t border-slate-100">
+                            <td className="p-3 font-medium text-chip-900">{inv.number}</td>
+                            <td className="p-3">{inv.client?.name || inv.billToName}</td>
+                            <td className="p-3 text-slate-500">{dt(inv.issuedOn)}</td>
+                            <td className="p-3">
+                              {dt(inv.dueOn)}
+                              {row?.daysLate > 0 && (
+                                <div className="text-xs text-red-700">{row.daysLate} days late</div>
+                              )}
+                            </td>
+                            <td className="p-3 text-right tabular-nums">&#8377;{paiseToString(inv.totalPaise)}</td>
+                            <td className="p-3 text-right tabular-nums">
+                              {outstanding > 0 ? `\u20b9${paiseToString(outstanding)}` : "\u2014"}
+                            </td>
+                            <td className="p-3">
+                              <span className={"text-[11px] px-2 py-0.5 rounded border " + (STATUS_TONE[inv.status] || STATUS_TONE.draft)}>
+                                {inv.status}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right whitespace-nowrap">
+                              <a href={`/invoices/${inv.id}/print`} target="_blank" rel="noopener noreferrer"
+                                className="text-xs text-slate-400 hover:text-chip-700 mr-2">Print</a>
+                              {data.canWrite && inv.status !== "cancelled" && (
+                                <button className="text-xs text-slate-400 hover:text-chip-700"
+                                  onClick={() => openPayment(inv.id, outstanding)}>
+                                  Record payment
                                 </button>
-                                <button className="btn-ghost" onClick={() => setPayFor(null)}>Cancel</button>
-                                <button className="text-xs text-slate-400 hover:text-red-700 ml-auto"
-                                  onClick={() => setConfirmOff(confirmOff === inv.id ? null : inv.id)}>
-                                  Write off
-                                </button>
-                              </div>
-                              {confirmOff === inv.id ? (
-                                <div className="mt-3 border-t border-slate-200 pt-3">
-                                  <div className="text-sm text-red-800">
-                                    Write off {inv.number}? That records {paiseToString(outstanding)} as money
-                                    you will never receive. It stays on the books and stops being chased.
-                                  </div>
-                                  <div className="flex gap-2 mt-2">
-                                    <button className="btn-primary" disabled={busy}
-                                      onClick={() => { setConfirmOff(null); patch({ id: inv.id, status: "written-off" }); }}>
-                                      Yes, write it off
-                                    </button>
-                                    <button className="btn-ghost" onClick={() => setConfirmOff(null)}>Keep chasing it</button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className="text-xs text-slate-500 mt-2">
-                                  Part payments are fine — enter what actually arrived, and the balance stays
-                                  outstanding. Every receipt is kept as its own line, so a mistake is corrected
-                                  by entering a negative amount rather than by editing this figure. Pressing Save
-                                  twice records one payment, not two.
-                                </p>
                               )}
                             </td>
                           </tr>
+                          {payFor === inv.id && (
+                            <tr className="border-t border-slate-100 bg-slate-50">
+                              <td colSpan={8} className="p-4">
+                                <PaymentPanel
+                                  inv={inv}
+                                  outstanding={outstanding}
+                                  payAmount={payAmount}
+                                  setPayAmount={setPayAmount}
+                                  busy={busy}
+                                  saveLabel={saveLabel}
+                                  savePayment={savePayment}
+                                  setPayFor={setPayFor}
+                                  confirmOff={confirmOff}
+                                  setConfirmOff={setConfirmOff}
+                                  patch={patch}
+                                  idPrefix="desk"
+                                />
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {data.totalCount > invoices.length && (
+                  <div className="p-3 text-xs text-slate-400 border-t border-slate-100">
+                    Showing {invoices.length} of {data.totalCount} invoices. The ageing figures above cover all of them.
+                  </div>
+                )}
+              </div>
+
+              {/* ── phone ────────────────────────────────────────────────── */}
+              <div className="md:hidden space-y-3">
+                {invoices.map((inv) => {
+                  const row = ageingRowsOnPage.find((r) => r.id === inv.id);
+                  const outstanding = inv.totalPaise - (inv.paidPaise || 0);
+                  return (
+                    <div key={inv.id} className="card p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-chip-900">{inv.number}</div>
+                          <div className="text-sm text-slate-600 truncate">
+                            {inv.client?.name || inv.billToName}
+                          </div>
+                        </div>
+                        <span className={"text-[11px] px-2 py-0.5 rounded border shrink-0 " + (STATUS_TONE[inv.status] || STATUS_TONE.draft)}>
+                          {inv.status}
+                        </span>
+                      </div>
+
+                      {/* Outstanding first and largest. On a phone this is the
+                          one figure being looked up; the total is context. */}
+                      <div className="mt-3 flex items-end justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] text-slate-500">Outstanding</div>
+                          <div className="text-lg tabular-nums text-chip-900">
+                            {outstanding > 0 ? `\u20b9${paiseToString(outstanding)}` : "\u2014"}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[11px] text-slate-500">Total</div>
+                          <div className="text-sm tabular-nums text-slate-600">
+                            &#8377;{paiseToString(inv.totalPaise)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 text-xs text-slate-500">
+                        Issued {dt(inv.issuedOn)} &middot; due {dt(inv.dueOn)}
+                        {row?.daysLate > 0 && (
+                          <span className="text-red-700"> &middot; {row.daysLate} days late</span>
                         )}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {data.totalCount > invoices.length && (
-                <div className="p-3 text-xs text-slate-400 border-t border-slate-100">
-                  Showing {invoices.length} of {data.totalCount} invoices. The ageing figures above cover all of them.
-                </div>
-              )}
-            </div>
+                      </div>
+
+                      <div className="mt-3 flex items-center gap-3 border-t border-slate-100 pt-3">
+                        {data.canWrite && inv.status !== "cancelled" && (
+                          <button className="btn-primary text-sm py-1.5"
+                            onClick={() => openPayment(inv.id, outstanding)}>
+                            Record payment
+                          </button>
+                        )}
+                        <a href={`/invoices/${inv.id}/print`} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-slate-400 hover:text-chip-700 ml-auto">Print</a>
+                      </div>
+
+                      {payFor === inv.id && (
+                        <div className="mt-3 border-t border-slate-200 pt-3">
+                          <PaymentPanel
+                            inv={inv}
+                            outstanding={outstanding}
+                            payAmount={payAmount}
+                            setPayAmount={setPayAmount}
+                            busy={busy}
+                            saveLabel={saveLabel}
+                            savePayment={savePayment}
+                            setPayFor={setPayFor}
+                            confirmOff={confirmOff}
+                            setConfirmOff={setConfirmOff}
+                            patch={patch}
+                            idPrefix="phone"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {data.totalCount > invoices.length && (
+                  <p className="text-xs text-slate-400 px-1">
+                    Showing {invoices.length} of {data.totalCount} invoices. The ageing figures above cover all of them.
+                  </p>
+                )}
+              </div>
+            </>
           )}
         </>
       )}
     </Shell>
+  );
+}
+
+/**
+ * The record-a-payment box. One component, rendered by both layouts — a second
+ * copy of a form that takes money is a second place for the idempotency key
+ * handling to drift.
+ */
+function PaymentPanel({
+  inv, outstanding, payAmount, setPayAmount, busy, saveLabel,
+  savePayment, setPayFor, confirmOff, setConfirmOff, patch, idPrefix,
+}) {
+  // Both layouts are in the DOM at every width — `hidden md:block` and
+  // `md:hidden` are CSS, not conditional rendering — so without a prefix the
+  // same input id would be emitted twice. htmlFor resolves to the FIRST match
+  // in document order, which is the desktop field; on a phone that field is
+  // display:none, so tapping the label focused nothing at all.
+  const fieldId = `${idPrefix}-pay-${inv.id}`;
+  return (
+    <>
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label htmlFor={fieldId} className="label">Amount received (&#8377;)</label>
+          <input id={fieldId} className="input max-w-[12rem]" inputMode="decimal"
+            value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
+        </div>
+        <button className="btn-primary" disabled={busy} onClick={() => savePayment(inv.id)}>
+          {saveLabel}
+        </button>
+        <button className="btn-ghost" onClick={() => setPayFor(null)}>Cancel</button>
+        <button className="text-xs text-slate-400 hover:text-red-700 ml-auto"
+          onClick={() => setConfirmOff(confirmOff === inv.id ? null : inv.id)}>
+          Write off
+        </button>
+      </div>
+      {confirmOff === inv.id ? (
+        <div className="mt-3 border-t border-slate-200 pt-3">
+          <div className="text-sm text-red-800">
+            Write off {inv.number}? That records {paiseToString(outstanding)} as money
+            you will never receive. It stays on the books and stops being chased.
+          </div>
+          <div className="flex gap-2 mt-2">
+            <button className="btn-primary" disabled={busy}
+              onClick={() => { setConfirmOff(null); patch({ id: inv.id, status: "written-off" }); }}>
+              Yes, write it off
+            </button>
+            <button className="btn-ghost" onClick={() => setConfirmOff(null)}>Keep chasing it</button>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-slate-500 mt-2">
+          Part payments are fine &mdash; enter what actually arrived, and the balance stays
+          outstanding. Every receipt is kept as its own line, so a mistake is corrected
+          by entering a negative amount rather than by editing this figure. Pressing Save
+          twice records one payment, not two.
+        </p>
+      )}
+    </>
   );
 }
 

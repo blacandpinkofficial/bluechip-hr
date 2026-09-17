@@ -13,8 +13,9 @@
 // click on the row now. The full editor is a side panel rather than a dialog
 // that covers the list: you can still see which opening you are editing.
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Shell from "@/components/Shell";
+import LoadMore from "@/components/LoadMore";
 
 const STATUSES = [
   { key: "open", label: "Open" },
@@ -153,6 +154,19 @@ export default function RequirementsPage() {
   const [status, setStatus] = useState("open");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  // What the SERVER says it served, not what is on screen. The two drift the
+  // moment a duplicate is dropped, and an offset taken from the screen then
+  // asks for a row it already has, forever.
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Which filter the rows on screen belong to. A "load more" that is still in
+  // flight when someone changes tab or types in the search box would otherwise
+  // append the old list's next page onto the new list, and it would stay there.
+  const viewKey = `${status}|${q}`;
+  const viewRef = useRef(viewKey);
+  useEffect(() => { viewRef.current = viewKey; }, [viewKey]);
   const [error, setError] = useState("");
   // Cleared on a timer. A confirmation that never goes away stops being a
   // confirmation and becomes furniture.
@@ -184,6 +198,9 @@ export default function RequirementsPage() {
         setRows(Array.isArray(j.requirements) ? j.requirements : []);
         setCanSeeFees(!!j.canSeeFees);
         setCanWrite(!!j.canWrite);
+        setTotal(Number(j.totalCount) || 0);
+        setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+        setHasMore(!!j.page?.hasMore);
       } catch (e) {
         setError(e.message);
       } finally {
@@ -192,6 +209,34 @@ export default function RequirementsPage() {
     },
     [status, q]
   );
+
+  // Appends the next page. See the note on the same function in the call list:
+  // the offset comes from what is on screen, and an id already shown is
+  // dropped rather than rendered twice.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const mine = viewRef.current;
+      const params = new URLSearchParams({ status, skip: String(nextSkip) });
+      if (q.trim()) params.set("q", q.trim());
+      const r = await fetch(`/api/requirements?${params}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not load more.");
+      if (viewRef.current !== mine) return;
+      const more = Array.isArray(j.requirements) ? j.requirements : [];
+      setRows((rs) => {
+        const seen = new Set(rs.map((x) => x.id));
+        return [...rs, ...more.filter((x) => !seen.has(x.id))];
+      });
+      setTotal(Number(j.totalCount) || 0);
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [status, q, nextSkip]);
 
   useEffect(() => {
     const t = setTimeout(() => load(), q ? 250 : 0);
@@ -480,6 +525,16 @@ export default function RequirementsPage() {
           }}
         />
       )}
+      {/* The true count and the next page. Until this existed the list simply
+          stopped at the server's take and said nothing about it. */}
+      <LoadMore
+        shown={rows.length}
+        total={total}
+        hasMore={hasMore}
+        busy={loadingMore}
+        onMore={loadMore}
+        noun="openings"
+      />
     </Shell>
   );
 }

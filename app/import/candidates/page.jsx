@@ -48,7 +48,7 @@ export default function ImportCandidatesPage() {
   // for and nobody will do.
   useEffect(() => {
     let alive = true;
-    fetch("/api/requirements?status=open")
+    fetch("/api/requirements?status=open&take=500")
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (!alive || !j) return;

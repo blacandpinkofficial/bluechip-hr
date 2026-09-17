@@ -40,7 +40,7 @@ export default function CandidateActions({ candidate, onDone }) {
 
   useEffect(() => {
     if (!open || requirements.length) return;
-    fetch("/api/requirements?status=open")
+    fetch("/api/requirements?status=open&take=500")
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => j && setRequirements(j.requirements || []))
       .catch(() => setError("Could not load the open requirements."));

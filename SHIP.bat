@@ -54,8 +54,14 @@ echo   PUSHED OK
 echo.
 git log --oneline -1
 echo.
-echo   On the Lightsail box:
-echo     cd /opt/bluechip/app ^&^& git pull ^&^& bash deploy/bootstrap.sh
+echo   NOT DEPLOYED YET. This pushed the code to GitHub; the server has
+echo   not pulled it. On the Lightsail box, run:
+echo.
+echo     cd /opt/bluechip/app ^&^& git pull ^&^& bash deploy/bluechip-deploy.sh
+echo.
+echo   NOT bootstrap.sh - that one re-runs the provisioner, which stops with
+echo   "Port 3100 is already in use" because it does not recognise that the
+echo   thing already on 3100 is Blue Chip itself.
 echo   ===========================================================
 echo.
 pause

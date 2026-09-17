@@ -5,8 +5,9 @@
 // your commercials.
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireCapability } from "@/lib/auth";
+import { requireCapability, can } from "@/lib/auth";
 import { read } from "@/lib/storage";
+import { isConfidentialKind } from "@/lib/documents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,8 +16,27 @@ export async function GET(req, { params }) {
   const gate = await requireCapability("candidate.read");
   if (!gate.ok) return gate.response;
 
-  const doc = await prisma.document.findUnique({ where: { id: params?.id } });
+  // findFirst, not findUnique: findUnique's where accepts only the unique
+  // columns, so the archived check cannot ride along on it.
+  //
+  // Archived documents were still served here. The list has filtered them out
+  // since the first day, which is what made it easy to miss — the document
+  // disappears from Knowledge and looks gone, while anyone who kept the URL,
+  // or can guess an id from one they saw, keeps downloading it. Archiving is
+  // meant to be an act, not a change of decoration.
+  const doc = await prisma.document.findFirst({
+    where: { id: params?.id, archived: false },
+  });
   if (!doc || !doc.storageKey) {
+    return NextResponse.json({ error: "No such file." }, { status: 404 });
+  }
+
+  // And the file itself is re-checked, not just the list it appears in. This
+  // URL is reachable with nothing but an id, so a filter applied only when
+  // drawing the list guards the shelf and leaves the door open. 404 rather
+  // than 403: whether a particular agreement exists is itself the answer
+  // somebody is fishing for.
+  if (isConfidentialKind(doc.kind) && !can(gate.user.role, "document.confidential")) {
     return NextResponse.json({ error: "No such file." }, { status: 404 });
   }
 

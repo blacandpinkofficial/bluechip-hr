@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
 import { resolveFee, describeFee } from "@/lib/fees";
 import { percentToBps, parseRupees } from "@/lib/money";
+import { pageParams, pageMeta } from "@/lib/paging";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,15 +34,22 @@ export async function GET(req) {
       : {}),
   };
 
+  const { take, skip } = pageParams(url);
+
   const rows = await prisma.requirement.findMany({
     where,
-    orderBy: [{ status: "asc" }, { openedAt: "desc" }],
+    // id last — see the note in app/api/candidates/route.js. openedAt
+    // defaults to now(), so a sheet imported in one go ties on every row.
+    orderBy: [{ status: "asc" }, { openedAt: "desc" }, { id: "asc" }],
     include: {
       client: true,
       _count: { select: { candidates: true, interviews: true, placements: true } },
     },
-    take: 500,
+    take,
+    skip,
   });
+
+  const totalCount = await prisma.requirement.count({ where });
 
   const showFees = can(gate.user.role, "client.fees");
   // The screen needs to know whether to offer the row actions at all. A
@@ -50,6 +58,7 @@ export async function GET(req) {
   const showWrite = can(gate.user.role, "requirement.write");
 
   return NextResponse.json({
+    ...pageMeta({ take, skip, totalCount, rows }),
     requirements: rows.map((r) => {
       const fee = resolveFee(r, r.client);
       return {

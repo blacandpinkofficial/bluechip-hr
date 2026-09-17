@@ -11,8 +11,9 @@
 // recording a placement, which is a whole record rather than a single field and
 // so gets a panel down the right-hand side.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import Shell from "@/components/Shell";
+import LoadMore from "@/components/LoadMore";
 
 const WHEN = [
   { key: "today", label: "Today" },
@@ -135,6 +136,16 @@ export default function InterviewsPage() {
   const [tab, setTab] = useState("today");
   const [data, setData] = useState({ interviews: [], counts: {}, me: {} });
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // What the SERVER says it served, not what is on screen — the two drift the
+  // moment a duplicate is dropped, and an offset taken from the screen then
+  // asks for a row it already has, forever.
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Which view the rows on screen belong to. A "load more" still in flight when
+  // someone changes tab would otherwise append the old list's next page onto
+  // the new one, and it would stay there.
+  const viewRef = useRef(null);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
 
@@ -152,12 +163,43 @@ export default function InterviewsPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Could not load interviews.");
       setData(j);
+      viewRef.current = tab;
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
   }, [tab]);
+
+  // See the note on the same function in Submissions: the rows have to land
+  // inside `data`, because that is what the rest of this screen reads.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const mine = viewRef.current;
+      const r = await fetch(`/api/interviews?when=${tab}&skip=${nextSkip}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not load more.");
+      if (viewRef.current !== mine) return;
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
+      setData((d) => {
+        const have = Array.isArray(d?.interviews) ? d.interviews : [];
+        const seen = new Set(have.map((x) => x.id));
+        const more = (Array.isArray(j.interviews) ? j.interviews : []).filter((x) => !seen.has(x.id));
+        // ...j overwrites `counts` with what came back beside this page, which
+        // is correct only because the server now counts them over every
+        // interview in this view rather than over the page.
+        return { ...d, ...j, interviews: [...have, ...more] };
+      });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [tab, nextSkip]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -727,6 +769,16 @@ export default function InterviewsPage() {
           </form>
         </div>
       )}
+      {/* The true count and the next page. Until this existed the list simply
+          stopped at the server's take and said nothing about it. */}
+      <LoadMore
+        shown={data?.interviews?.length || 0}
+        total={data?.totalCount || 0}
+        hasMore={hasMore}
+        busy={loadingMore}
+        onMore={loadMore}
+        noun="interviews"
+      />
     </Shell>
   );
 }

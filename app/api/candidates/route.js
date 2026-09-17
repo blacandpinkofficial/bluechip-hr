@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireCapability, ownScope, can } from "@/lib/auth";
 import { parseRupees } from "@/lib/money";
 import { screen } from "@/lib/screening";
+import { pageParams, pageMeta } from "@/lib/paging";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,16 +92,25 @@ export async function GET(req) {
     ],
   };
 
+  const { take, skip } = pageParams(url);
+
   const rows = await prisma.candidate.findMany({
     where,
+    // Every sort ends with the id. Not decoration: OFFSET over a sort with ties
+    // has no defined order in Postgres, and these sorts are full of them — the
+    // cold queue orders by lastContactedAt while deliberately including the
+    // names whose lastContactedAt is null, so every never-called candidate is
+    // tied with every other. The consequence is not a reshuffle; one row lands
+    // on two pages and another on none, and the one on none is never seen.
     orderBy:
-      queue === "due" ? [{ lastContactedAt: "asc" }]
-      : queue === "cold" ? [{ lastContactedAt: "asc" }]
+      queue === "due" ? [{ lastContactedAt: "asc" }, { id: "asc" }]
+      : queue === "cold" ? [{ lastContactedAt: "asc" }, { id: "asc" }]
       // History reads newest-first: the person you set aside this morning is
       // the one you are most likely to be looking for.
-      : isHistory ? [{ lastContactedAt: "desc" }]
-      : [{ createdAt: "desc" }],
-    take: 200,
+      : isHistory ? [{ lastContactedAt: "desc" }, { id: "asc" }]
+      : [{ createdAt: "desc" }, { id: "asc" }],
+    take,
+    skip,
     include: {
       owner: { select: { id: true, name: true } },
       requirement: {
@@ -159,7 +169,11 @@ export async function GET(req) {
     (Array.isArray(reached) ? reached : []).map((r) => [r.candidateId, r._max?.calledAt || null])
   );
 
+  // The same where, so "50 of 1,340" is true and Load more never loads nothing.
+  const totalCount = await prisma.candidate.count({ where });
+
   return NextResponse.json({
+    ...pageMeta({ take, skip, totalCount, rows }),
     candidates: rows.map((c) => {
       // Screening runs here, not in the browser: the requirement's criteria
       // are the client's business terms and a recruiter's device has no need

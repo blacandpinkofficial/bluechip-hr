@@ -12,6 +12,7 @@ import { sendMail, submissionEmail, mailReady } from "@/lib/mailer";
 import { getSettings } from "@/lib/settings";
 import { resolveKey } from "@/lib/storage";
 import fs from "fs/promises";
+import { pageParams, pageMeta } from "@/lib/paging";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,15 +65,22 @@ export async function GET(req) {
   // as everywhere else in the app, using the same helper so it cannot drift.
   const scope = can(user.role, "report.desk") ? {} : { sentById: user.id };
 
+  // Lifted out of the call so count() can be given the identical clause. Two
+  // copies of a where is how a "load more" button ends up loading nothing.
+  const where = {
+    ...scope,
+    ...(status ? { status } : {}),
+    ...(clientId ? { clientId } : {}),
+    ...(candidateId ? { candidateId } : {}),
+  };
+  const { take, skip } = pageParams(url);
+
   const rows = await prisma.submission.findMany({
-    where: {
-      ...scope,
-      ...(status ? { status } : {}),
-      ...(clientId ? { clientId } : {}),
-      ...(candidateId ? { candidateId } : {}),
-    },
-    orderBy: { sentAt: "desc" },
-    take: 300,
+    where,
+    // id last — see the note in app/api/candidates/route.js.
+    orderBy: [{ sentAt: "desc" }, { id: "asc" }],
+    take,
+    skip,
     include: {
       candidate: { select: { id: true, name: true, phone: true, designation: true } },
       requirement: { select: { id: true, designation: true, location: true } },
@@ -138,11 +146,60 @@ export async function GET(req) {
     interview: interviewBy.get(`${r.candidateId}::${r.requirementId}`) || null,
   }));
 
+  // These two describe the DESK, not this page, so they are counted against the
+  // whole filtered set rather than against the hundred rows that happen to be
+  // on screen. Derived from `withAge` they were already wrong at the old cap,
+  // and quietly more wrong after paging: the list is newest-first and "no reply
+  // in four days" is a property of the oldest rows, so counting the first page
+  // counted precisely the submissions least likely to qualify.
+  const silentBefore = new Date(now - 4 * 86400000);
+  const [totalCount, silent, scheduled] = await Promise.all([
+    prisma.submission.count({ where }),
+    prisma.submission.count({
+      where: { AND: [where, { status: "sent" }, { sentAt: { lte: silentBefore } }] },
+    }),
+    canSeeInterviews
+      ? prisma.submission.findMany({
+          where: { AND: [where, { status: "interview-scheduled" }] },
+          select: { candidateId: true, requirementId: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  // Of those, how many have no Interview row behind them. One query for the
+  // pairs, one for the interviews that exist against them; both are small,
+  // because a desk with thousands of submissions still has few sitting at
+  // "interview scheduled" at any moment.
+  let scheduledWithoutInterview = null;
+  if (Array.isArray(scheduled)) {
+    if (scheduled.length === 0) {
+      scheduledWithoutInterview = 0;
+    } else {
+      const booked = await prisma.interview
+        .findMany({
+          where: {
+            OR: scheduled.map((p) => ({
+              candidateId: p.candidateId,
+              requirementId: p.requirementId,
+            })),
+          },
+          select: { candidateId: true, requirementId: true },
+        })
+        .catch(() => []);
+      const have = new Set(booked.map((b) => `${b.candidateId}::${b.requirementId}`));
+      scheduledWithoutInterview = scheduled.filter(
+        (p) => !have.has(`${p.candidateId}::${p.requirementId}`)
+      ).length;
+    }
+  }
+
   return NextResponse.json({
+    ...pageMeta({ take, skip, totalCount, rows }),
     submissions: withAge,
     statuses: STATUSES,
-    // Counted server-side so every screen showing this number shows the same one.
-    silent: withAge.filter((r) => r.status === "sent" && r.daysSilent >= 4).length,
+    // Counted server-side, over every submission matching the current filter —
+    // not over this page. See the queries above.
+    silent,
     mailConfigured: mailReady(await getSettings()),
     me: user.id,
     // What this person may actually do, decided here by capability and never by
@@ -158,9 +215,7 @@ export async function GET(req) {
     // healthy answer. Null, not zero, when this person cannot read interviews:
     // the lookup above did not run, so the honest answer is "not known" rather
     // than a reassuring number nobody computed.
-    scheduledWithoutInterview: canSeeInterviews
-      ? withAge.filter((r) => r.status === "interview-scheduled" && !r.interview).length
-      : null,
+    scheduledWithoutInterview,
   });
 }
 

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
+import { isConfidentialKind } from "@/lib/documents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,12 @@ export async function PATCH(req, { params }) {
   try {
     const doc = await prisma.document.findUnique({ where: { id: params?.id } });
     if (!doc) return NextResponse.json({ error: "No such document." }, { status: 404 });
+
+    // The same shelf, the same door. Without this a telecaller cannot see a
+    // client agreement but can still unpin, retitle or archive one by id.
+    if (isConfidentialKind(doc.kind) && !can(gate.user.role, "document.confidential")) {
+      return NextResponse.json({ error: "No such document." }, { status: 404 });
+    }
 
     const b = await req.json().catch(() => ({}));
     const data = {};

@@ -7,39 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
-
-// Stored role value → what to call it on screen. Keep these keys in step with
-// ROLES in lib/auth.js; a role with no entry here falls back to its raw value.
-const ROLE_NAME = {
-  owner: "Owner",
-  manager: "Manager",
-  team_leader: "Team Leader",
-  recruiter: "Telecaller",
-};
-
-const ROLE_BLURB = {
-  owner: "Everything, including commercials, revenue and invoices.",
-  manager: "The whole desk, except setting client rates and invoicing.",
-  team_leader:
-    "Runs a team. Gives out openings, watches every caller's work, reviews practice calls — but sees no revenue, no client rates and no one else's pay.",
-  recruiter: "Their own candidates, calls and interviews, and their own numbers only.",
-};
-
-const ROLE_TONE = {
-  owner: "bg-chip-100 text-chip-800 border-chip-300",
-  manager: "bg-sky-100 text-sky-800 border-sky-300",
-  team_leader: "bg-amber-100 text-amber-800 border-amber-300",
-  recruiter: "bg-slate-100 text-slate-700 border-slate-300",
-};
-
-const FALLBACK_TONE = "bg-slate-100 text-slate-700 border-slate-300";
-
-function roleName(r) {
-  return ROLE_NAME[r] || r;
-}
-function roleTone(r) {
-  return ROLE_TONE[r] || FALLBACK_TONE;
-}
+import { ROLE_BLURB, ROLE_OPTIONS, roleName, roleTone } from "@/lib/roles";
 
 function ago(d) {
   if (!d) return "never signed in";
@@ -219,10 +187,9 @@ export default function UsersPage() {
               <label htmlFor="u-role" className="label">Role</label>
               <select id="u-role" className="input" value={form.role}
                 onChange={(e) => setForm({ ...form, role: e.target.value })}>
-                <option value="recruiter">Telecaller</option>
-                <option value="team_leader">Team Leader</option>
-                <option value="manager">Manager</option>
-                <option value="owner">Owner</option>
+                {ROLE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -279,10 +246,9 @@ export default function UsersPage() {
                         onChange={(e) => patch(u.id, { role: e.target.value })}
                         aria-label={`Role for ${u.name}`}
                       >
-                        <option value="recruiter">Telecaller</option>
-                        <option value="team_leader">Team Leader</option>
-                        <option value="manager">Manager</option>
-                        <option value="owner">Owner</option>
+                        {ROLE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
                       </select>
                     )}
                   </td>

@@ -8,6 +8,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+// Inert module — no prisma, no next/headers. Safe in a client component;
+// lib/auth.js is not. See the note at the top of lib/roles.js.
+import { roleName } from "@/lib/roles";
 
 // Grouped, not a flat row. This was eighteen links in one horizontally
 // scrolling strip — more than fits on a laptop, and on a phone the last third
@@ -23,16 +26,6 @@ import { useEffect, useState } from "react";
 // rather than a "Today" and a "Dashboard" that both opened the same thing —
 // two names for one screen is how a menu stops being trusted. /reminders still
 // exists and redirects, so old bookmarks land in the right place.
-// Stored role value → what to show in the header. Deliberately a local copy
-// rather than an import from lib/auth.js: this is a client component, and
-// lib/auth.js pulls in prisma, bcryptjs and next/headers. Keep in step with
-// ROLES there.
-const ROLE_LABELS = {
-  owner: "Owner",
-  manager: "Manager",
-  team_leader: "Team Leader",
-  recruiter: "Telecaller",
-};
 
 const GROUPS = [
   { label: "Today", href: "/dashboard", cap: "candidate.read" },
@@ -109,13 +102,33 @@ function isOn(pathname, href, siblings = []) {
 export default function Shell({ children, title, subtitle, actions }) {
   const pathname = usePathname();
   const [me, setMe] = useState(null);
+  // "loading" | "ready" | "failed". It was a bare null before, which made a
+  // failed /me indistinguishable from a slow one: the nav collapsed to the
+  // handful of links that need no capability and simply stayed that way, so a
+  // dropped connection looked exactly like being demoted. Nobody reports that
+  // as a bug; they report that the app has lost half its menu.
+  const [status, setStatus] = useState("loading");
 
   useEffect(() => {
     let alive = true;
     fetch("/api/auth/me")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => { if (alive && j) setMe(j); })
-      .catch(() => {});
+      .then(async (r) => {
+        // 401 is not a failed check, it is an expired or revoked session, and
+        // the two want opposite words. middleware.js only looks for the COOKIE,
+        // never for a valid one, so a fortnight-old tab loads the page and
+        // fails here — telling that person "reload and it comes back" is
+        // telling them to do the one thing that cannot work. Send them to sign
+        // in, keeping where they were so they land back on it.
+        if (r.status === 401) {
+          const next = window.location.pathname + window.location.search;
+          window.location.href = `/login?next=${encodeURIComponent(next)}`;
+          return null;
+        }
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then((j) => { if (alive && j) { setMe(j); setStatus("ready"); } })
+      .catch(() => { if (alive) setStatus("failed"); });
     return () => { alive = false; };
   }, []);
 
@@ -132,6 +145,17 @@ export default function Shell({ children, title, subtitle, actions }) {
   const [openGroup, setOpenGroup] = useState(null);
   useEffect(() => setOpenGroup(null), [pathname]);
 
+  // Escape closes it. An open menu could only be dismissed by picking something
+  // or by clicking the invisible sheet behind it — fine with a mouse, nothing
+  // at all from the keyboard, where the menu became a trap you tabbed through
+  // to the end of.
+  useEffect(() => {
+    if (!openGroup) return;
+    const onKey = (e) => { if (e.key === "Escape") setOpenGroup(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openGroup]);
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-slate-200 bg-white">
@@ -145,7 +169,7 @@ export default function Shell({ children, title, subtitle, actions }) {
               {me?.user && (
                 <div className="text-right leading-tight hidden sm:block">
                   <div className="text-sm font-medium">{me.user.name}</div>
-                  <div className="text-[11px] text-slate-500">{ROLE_LABELS[me.user.role] || me.user.role}</div>
+                  <div className="text-[11px] text-slate-500">{roleName(me.user.role)}</div>
                 </div>
               )}
               <form action="/api/auth/logout" method="post">
@@ -156,13 +180,15 @@ export default function Shell({ children, title, subtitle, actions }) {
             </div>
           </div>
           <nav className="flex gap-1 -mb-px">
-            {visible.map((g) => {
+            {visible.map((g, gi) => {
+              const isLast = gi === visible.length - 1;
               if (!g.items) {
                 const active = pathname === g.href;
                 return (
                   <Link
                     key={g.href}
                     href={g.href}
+                    aria-current={active ? "page" : undefined}
                     className={
                       "px-3 py-2 text-sm border-b-2 whitespace-nowrap transition " +
                       (active
@@ -176,6 +202,14 @@ export default function Shell({ children, title, subtitle, actions }) {
               }
               const active = g.items.some((n) => isOn(pathname, n.href, g.items));
               const open = openGroup === g.label;
+              // The rightmost group's panel opened leftwards from its button
+              // and ran off the screen; on a narrow window "Settings" and
+              // "Team" were simply not there. It opens rightwards from its own
+              // right edge instead. Written as two whole class names — a
+              // built-up one is invisible to Tailwind's scanner.
+              const dropClass = isLast
+                ? "absolute right-0 top-full z-20 mt-px min-w-[12rem] rounded-b border border-slate-200 bg-white shadow-lg py-1"
+                : "absolute left-0 top-full z-20 mt-px min-w-[12rem] rounded-b border border-slate-200 bg-white shadow-lg py-1";
               return (
                 <div key={g.label} className="relative">
                   <button
@@ -202,7 +236,7 @@ export default function Shell({ children, title, subtitle, actions }) {
                         aria-label="Close menu"
                         onClick={() => setOpenGroup(null)}
                       />
-                      <div className="absolute left-0 top-full z-20 mt-px min-w-[12rem] rounded-b border border-slate-200 bg-white shadow-lg py-1">
+                      <div className={dropClass}>
                         {g.items.map((n) => {
                           const here = isOn(pathname, n.href, g.items);
                           return (
@@ -210,6 +244,7 @@ export default function Shell({ children, title, subtitle, actions }) {
                               key={n.href}
                               href={n.href}
                               onClick={() => setOpenGroup(null)}
+                              aria-current={here ? "page" : undefined}
                               className={
                                 "block px-4 py-2 text-sm transition " +
                                 (here
@@ -229,6 +264,25 @@ export default function Shell({ children, title, subtitle, actions }) {
             })}
           </nav>
         </div>
+        {status === "failed" && (
+          // Not a toast and not a console line: the menu above is visibly
+          // short, and this is the sentence that explains why.
+          <div role="status" className="bg-amber-50 border-t border-amber-200">
+            <div className="max-w-6xl mx-auto px-6 py-2 text-xs text-amber-900 flex items-center gap-3">
+              <span>
+                Couldn&rsquo;t check what you have access to, so the menu is showing less than usual.
+                Nothing is lost — reload and it comes back.
+              </span>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="underline underline-offset-2 hover:text-amber-950 shrink-0"
+              >
+                Reload
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-7">

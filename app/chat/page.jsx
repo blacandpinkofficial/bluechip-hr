@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Shell from "@/components/Shell";
+import { roleName } from "@/lib/roles";
 
 function when(d) {
   const t = new Date(d);
@@ -110,7 +111,7 @@ export default function ChatPage() {
               active={peer === p.id}
               onClick={() => setPeer(p.id)}
               label={p.name}
-              sub={p.role}
+              sub={roleName(p.role)}
               unread={unread[p.id]}
             />
           ))}

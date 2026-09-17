@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Shell from "@/components/Shell";
+import { ROLE_LABELS } from "@/lib/roles";
 import { rupees } from "@/lib/money";
 import { timeLabel } from "@/lib/day";
 
@@ -310,7 +311,7 @@ export default function DailyReportPage() {
                   <thead>
                     <tr className="bg-slate-50 border-y border-slate-200 text-left">
                       <th className="px-4 py-2 font-medium text-slate-600 sticky left-0 bg-slate-50 z-10 min-w-[11rem]">
-                        Telecaller
+                        {ROLE_LABELS.recruiter}
                       </th>
                       <th className="px-3 py-2 font-medium text-slate-600 text-right">Calls</th>
                       <th className="px-3 py-2 font-medium text-slate-600 text-right">Reached</th>

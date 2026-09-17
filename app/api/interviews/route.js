@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCapability, can } from "@/lib/auth";
 import { istDay } from "@/lib/day";
+import { pageParams, pageMeta } from "@/lib/paging";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,16 +48,39 @@ export async function GET(req) {
   const startOfToday = istDay();
   const endOfToday = new Date(startOfToday.getTime() + 86400000);
 
-  const where =
+  const whenWhere =
     when === "today" ? { scheduledAt: { gte: startOfToday, lt: endOfToday } }
     : when === "past" ? { scheduledAt: { lt: startOfToday } }
     : when === "all" ? {}
     : { scheduledAt: { gte: startOfToday } };
 
+  // Whose interviews, decided in the query rather than afterwards.
+  //
+  // This used to fetch the desk's next 300 and then drop the ones that were
+  // not yours in JavaScript. On a busy desk that meant a recruiter was handed
+  // 300 rows to read four of — and, worse, their fifth interview could sit at
+  // position 301 and simply never appear, because the cut happened after the
+  // limit rather than before it. Paging turns that from a slow leak into an
+  // obvious one: page two would come back empty while interviews remained.
+  //
+  // The null branch is deliberate and matches what the old filter did: an
+  // interview against a candidate nobody owns is everyone's to see, not
+  // nobody's.
+  const scope = can(gate.user.role, "report.desk")
+    ? {}
+    : { OR: [{ candidate: { ownerId: gate.user.id } }, { candidate: { ownerId: null } }] };
+
+  const where = { AND: [whenWhere, scope] };
+  const { take, skip } = pageParams(url);
+
   const rows = await prisma.interview.findMany({
     where,
-    orderBy: { scheduledAt: when === "past" ? "desc" : "asc" },
-    take: 300,
+    // id last — see the note in app/api/candidates/route.js. Interview
+    // times are typed by hand and cluster on the hour, so ties are the rule
+    // here rather than the exception.
+    orderBy: [{ scheduledAt: when === "past" ? "desc" : "asc" }, { id: "asc" }],
+    take,
+    skip,
     include: {
       candidate: { select: { id: true, name: true, phone: true, stage: true, ownerId: true } },
       requirement: {
@@ -68,11 +92,23 @@ export async function GET(req) {
     },
   });
 
-  // A recruiter sees the interviews for their own candidates. The desk view is
-  // a manager's job.
-  const visible = can(gate.user.role, "report.desk")
-    ? rows
-    : rows.filter((r) => !r.candidate?.ownerId || r.candidate.ownerId === gate.user.id);
+  // Already scoped by the query above — kept as a name because everything
+  // below reads from it.
+  const visible = rows;
+
+  // The productivity numbers are for the whole filtered set, not for the page.
+  // They were filters over `visible`, which is one page of rows — "Direct line
+  // ups scheduled" would have quietly become "direct line ups among the first
+  // hundred", which is a different sentence and reads like a drop in output.
+  const countWhere = (extra) => prisma.interview.count({ where: { AND: [where, extra] } });
+  const [totalCount, direct, telephonic, video, attended, selected] = await Promise.all([
+    prisma.interview.count({ where }),
+    countWhere({ mode: "direct" }),
+    countWhere({ mode: "telephonic" }),
+    countWhere({ mode: "video" }),
+    countWhere({ attended: true }),
+    countWhere({ outcome: "selected" }),
+  ]);
 
   // Where did this interview come from? An interview exists because a CV went
   // to a client and the client said yes, and until now the two halves of that
@@ -147,6 +183,7 @@ export async function GET(req) {
   }
 
   return NextResponse.json({
+    ...pageMeta({ take, skip, totalCount, rows: visible }),
     when,
     // What this person may actually do, decided here by capability and never by
     // a role string in the browser. The screen hides what it cannot do; the
@@ -184,12 +221,9 @@ export async function GET(req) {
     })),
     counts: {
       // "Direct Line ups scheduled" and "Telephonic scheduled" on the old
-      // productivity tab are these two numbers. Counted, not typed.
-      direct: visible.filter((i) => i.mode === "direct").length,
-      telephonic: visible.filter((i) => i.mode === "telephonic").length,
-      video: visible.filter((i) => i.mode === "video").length,
-      attended: visible.filter((i) => i.attended === true).length,
-      selected: visible.filter((i) => i.outcome === "selected").length,
+      // productivity tab are these two numbers. Counted by the database over
+      // every interview in this view, not typed and not per-page.
+      direct, telephonic, video, attended, selected,
     },
   });
 }

@@ -6,10 +6,14 @@
 // somebody typed (a handover before leave, how a particular client likes their
 // CVs formatted).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import Shell from "@/components/Shell";
+import LoadMore from "@/components/LoadMore";
 
-const KINDS = [
+// The filter bar. "Client agreements" is only offered to someone who may read
+// them — see lib/documents.js. The server scopes the rows regardless; this
+// keeps the bar from showing a shelf that always comes back empty.
+const BASE_KINDS = [
   { key: "", label: "Everything" },
   { key: "handover", label: "Handovers" },
   { key: "process", label: "Client process" },
@@ -17,6 +21,11 @@ const KINDS = [
   { key: "policy", label: "Policy" },
   { key: "note", label: "Notes" },
 ];
+
+function kindChips(confidential) {
+  if (!confidential) return BASE_KINDS;
+  return [...BASE_KINDS, { key: "client", label: "Client agreements" }];
+}
 
 const KIND_TONE = {
   handover: "bg-amber-50 text-amber-900 border-amber-200",
@@ -39,9 +48,23 @@ function when(d) {
 export default function KnowledgePage() {
   const [docs, setDocs] = useState([]);
   const [canArchive, setCanArchive] = useState(false);
+  const [canConfidential, setCanConfidential] = useState(false);
   const [kind, setKind] = useState("");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  // What the SERVER says it served, not what is on screen. The two drift the
+  // moment a duplicate is dropped, and an offset taken from the screen then
+  // asks for a row it already has, forever.
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Which filter the rows on screen belong to. A "load more" that is still in
+  // flight when someone changes tab or types in the search box would otherwise
+  // append the old list's next page onto the new list, and it would stay there.
+  const viewKey = `${kind}|${q}`;
+  const viewRef = useRef(viewKey);
+  useEffect(() => { viewRef.current = viewKey; }, [viewKey]);
   const [error, setError] = useState("");
   const [mode, setMode] = useState(null); // "write" | "upload"
   const [busy, setBusy] = useState(false);
@@ -62,12 +85,42 @@ export default function KnowledgePage() {
       if (!r.ok) throw new Error(j.error || "Could not load.");
       setDocs(j.documents || []);
       setCanArchive(!!j.canArchive);
+      setCanConfidential(!!j.canSeeConfidential);
+      setTotal(Number(j.totalCount) || 0);
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
   }, [kind, q]);
+
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const mine = viewRef.current;
+      const p = new URLSearchParams({ skip: String(nextSkip) });
+      if (kind) p.set("kind", kind);
+      if (q.trim()) p.set("q", q.trim());
+      const r = await fetch(`/api/documents?${p}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not load more.");
+      if (viewRef.current !== mine) return;
+      const more = Array.isArray(j.documents) ? j.documents : [];
+      setDocs((ds) => {
+        const seen = new Set(ds.map((x) => x.id));
+        return [...ds, ...more.filter((x) => !seen.has(x.id))];
+      });
+      setTotal(Number(j.totalCount) || 0);
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [kind, q, nextSkip]);
 
   useEffect(() => {
     const t = setTimeout(load, q ? 250 : 0);
@@ -222,7 +275,10 @@ export default function KnowledgePage() {
                 <option value="process">Client process</option>
                 <option value="training">Training</option>
                 <option value="policy">Policy</option>
-                <option value="client">Client document</option>
+                {/* Filing something as a client agreement decides who may read
+                    it afterwards, so it is offered only to the people who can.
+                    The upload route refuses it either way. */}
+                {canConfidential && <option value="client">Client document</option>}
                 <option value="note">Other</option>
               </select>
             </div>
@@ -239,7 +295,7 @@ export default function KnowledgePage() {
       )}
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        {KINDS.map((k) => (
+        {kindChips(canConfidential).map((k) => (
           <button
             key={k.key || "all"}
             onClick={() => setKind(k.key)}
@@ -340,6 +396,16 @@ export default function KnowledgePage() {
         manager&rsquo;s decision even for your own note — a handover deleted by the person
         who wrote it is exactly the one someone needed.
       </p>
+      {/* The true count and the next page. Until this existed the list simply
+          stopped at the server's take and said nothing about it. */}
+      <LoadMore
+        shown={docs.length}
+        total={total}
+        hasMore={hasMore}
+        busy={loadingMore}
+        onMore={loadMore}
+        noun="documents"
+      />
     </Shell>
   );
 }

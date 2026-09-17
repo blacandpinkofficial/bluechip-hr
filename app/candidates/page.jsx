@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Shell from "@/components/Shell";
 import { waMeLink, waWebLink, telLink, jobMessage, followUpMessage } from "@/lib/whatsapp";
 import CandidateActions from "@/components/CandidateActions";
+import LoadMore from "@/components/LoadMore";
 
 const QUEUES = [
   { key: "due", label: "Callbacks due" },
@@ -184,6 +185,19 @@ export default function CandidatesPage() {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  // What the SERVER says it served, not what is on screen. The two drift the
+  // moment a duplicate is dropped, and an offset taken from the screen then
+  // asks for a row it already has, forever.
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Which filter the rows on screen belong to. A "load more" that is still in
+  // flight when someone changes tab or types in the search box would otherwise
+  // append the old list's next page onto the new list, and it would stay there.
+  const viewKey = `${queue}|${q}|${requirementId}`;
+  const viewRef = useRef(viewKey);
+  useEffect(() => { viewRef.current = viewKey; }, [viewKey]);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState(null);
   // Set by the import screen's "Start calling" link, so a telecaller lands on
@@ -274,12 +288,55 @@ export default function CandidatesPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Could not load the list.");
       setRows(Array.isArray(j.candidates) ? j.candidates : []);
+      setTotal(Number(j.totalCount) || 0);
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
   }, [queue, q, requirementId]);
+
+  // The next page, appended rather than swapped in. Changing a filter calls
+  // load() and starts again from the top; this only ever adds to what is
+  // already on screen, so a callback somebody is part-way through typing into
+  // does not vanish underneath them.
+  //
+  // skip is taken from what is actually on screen, not from a page number.
+  // Page numbers and an insert between two requests disagree; a length does
+  // not, beyond repeating one row at worst.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const mine = viewRef.current;
+      const p = new URLSearchParams({ queue, skip: String(nextSkip) });
+      if (requirementId) p.set("requirement", requirementId);
+      if (q.trim()) {
+        p.set("q", q.trim());
+        if (queue !== "history") p.set("queue", "all");
+      }
+      const r = await fetch(`/api/candidates?${p}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not load more.");
+      if (viewRef.current !== mine) return; // the view moved on while this was in flight
+      const more = Array.isArray(j.candidates) ? j.candidates : [];
+      // Guard against a duplicate: a row added by someone else between the two
+      // requests shifts the offset by one and would otherwise arrive twice,
+      // and React would then warn about two children with the same key.
+      setRows((rs) => {
+        const seen = new Set(rs.map((x) => x.id));
+        return [...rs, ...more.filter((x) => !seen.has(x.id))];
+      });
+      setTotal(Number(j.totalCount) || 0);
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [queue, q, requirementId, nextSkip]);
 
   useEffect(() => {
     const t = setTimeout(load, q ? 250 : 0);
@@ -292,7 +349,7 @@ export default function CandidatesPage() {
   // could not be filled would stop the day for no reason.
   useEffect(() => {
     let alive = true;
-    fetch("/api/requirements?status=open")
+    fetch("/api/requirements?status=open&take=500")
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (!alive || !j) return;
@@ -1618,6 +1675,16 @@ export default function CandidatesPage() {
           })}
         </div>
       )}
+      {/* The true count and the next page. Until this existed the list simply
+          stopped at the server's take and said nothing about it. */}
+      <LoadMore
+        shown={rows.length}
+        total={total}
+        hasMore={hasMore}
+        busy={loadingMore}
+        onMore={loadMore}
+        noun="candidates"
+      />
     </Shell>
   );
 }

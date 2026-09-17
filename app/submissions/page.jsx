@@ -11,8 +11,9 @@
 // have stopped doing it. The note and the full status list stay one click
 // further in, inline under the row, for the times the reply needs words.
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState, useRef } from "react";
 import Shell from "@/components/Shell";
+import LoadMore from "@/components/LoadMore";
 
 const TONE = {
   sent: "bg-slate-100 text-slate-700 border-slate-300",
@@ -144,6 +145,16 @@ export default function SubmissionsPage() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // What the SERVER says it served, not what is on screen — the two drift the
+  // moment a duplicate is dropped, and an offset taken from the screen then
+  // asks for a row it already has, forever.
+  const [nextSkip, setNextSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // Which view the rows on screen belong to. A "load more" still in flight when
+  // someone changes tab would otherwise append the old list's next page onto
+  // the new one, and it would stay there.
+  const viewRef = useRef(null);
   const [error, setError] = useState("");
   // Cleared on a timer. Without one the green "Saved." banner stayed on screen
   // for the rest of the session, so it stopped meaning anything.
@@ -174,6 +185,9 @@ export default function SubmissionsPage() {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Could not load submissions.");
         setData(j);
+        viewRef.current = filter;
+        setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+        setHasMore(!!j.page?.hasMore);
         setError("");
       } catch (e) {
         setError(e.message);
@@ -183,6 +197,40 @@ export default function SubmissionsPage() {
     },
     [filter]
   );
+
+  // The next page, merged into the payload already held. Everything else on
+  // this screen reads from `data`, so the extra rows have to arrive inside it
+  // rather than beside it — and the counts the server sends with them (silent,
+  // orphaned) are for the whole set, not for the page, so the newer copy wins.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const mine = viewRef.current;
+      const p = new URLSearchParams({ skip: String(nextSkip) });
+      if (filter) p.set("status", filter);
+      const r = await fetch(`/api/submissions?${p}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Could not load more.");
+      if (viewRef.current !== mine) return;
+      setNextSkip((j.page?.skip || 0) + (j.page?.returned || 0));
+      setHasMore(!!j.page?.hasMore);
+      setData((d) => {
+        const have = Array.isArray(d?.submissions) ? d.submissions : [];
+        const seen = new Set(have.map((x) => x.id));
+        const more = (Array.isArray(j.submissions) ? j.submissions : []).filter((x) => !seen.has(x.id));
+        // ...j overwrites silent, scheduledWithoutInterview and totalCount with
+        // the values that came back alongside this page. That is correct ONLY
+        // because the server now counts those over every submission matching
+        // the filter rather than over the page it is sending. If that ever goes
+        // back to being per-page, this line starts blanking the banner.
+        return { ...d, ...j, submissions: [...have, ...more] };
+      });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [filter, nextSkip]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -736,6 +784,16 @@ export default function SubmissionsPage() {
         together — so the interview appears on the Interviews screen and in the day&rsquo;s figures
         instead of existing only as a word on this one.
       </p>
+      {/* The true count and the next page. Until this existed the list simply
+          stopped at the server's take and said nothing about it. */}
+      <LoadMore
+        shown={data?.submissions?.length || 0}
+        total={data?.totalCount || 0}
+        hasMore={hasMore}
+        busy={loadingMore}
+        onMore={loadMore}
+        noun="submissions"
+      />
     </Shell>
   );
 }

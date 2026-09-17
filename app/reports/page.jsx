@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Shell from "@/components/Shell";
+import { roleName } from "@/lib/roles";
 
 function pct(r) { return r == null ? "—" : `${r}%`; }
 function shortMoney(n) {
@@ -254,7 +255,7 @@ export default function ReportsPage() {
                         <button onClick={() => setUser(u.id)} className="font-medium text-chip-800 hover:underline">
                           {u.name}
                         </button>
-                        <div className="text-[11px] text-slate-400">{u.role}</div>
+                        <div className="text-[11px] text-slate-400">{roleName(u.role)}</div>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">{u.counts.calls}</td>
                       <td className="px-4 py-3 text-right tabular-nums text-slate-600">{pct(u.rates.connect)}</td>

@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
+import { roleName } from "@/lib/roles";
 
 function inr(n) {
   if (n == null) return "—";
@@ -172,7 +173,7 @@ export default function PaySetupPage() {
                   <tr key={p.user.id} className="border-t border-slate-100 align-top">
                     <td className="p-3">
                       <div className="font-medium text-chip-900">{p.user.name}</div>
-                      <div className="text-xs text-slate-500 capitalize">{p.user.role}</div>
+                      <div className="text-xs text-slate-500">{roleName(p.user.role)}</div>
                     </td>
                     <td className="p-3 text-right tabular-nums">
                       {p.current ? inr(p.current.monthlyGross) : <span className="text-amber-800">not set</span>}

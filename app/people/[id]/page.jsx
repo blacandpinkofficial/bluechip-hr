@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Shell from "@/components/Shell";
+import { roleName } from "@/lib/roles";
 import { recentMonths, monthLabel } from "@/lib/day";
 
 function inr(n) {
@@ -54,7 +55,7 @@ export default function PersonPage() {
   return (
     <Shell
       title={d?.person?.name || "Desk"}
-      subtitle={d ? `${d.person.role} · joined ${dt(d.person.createdAt)}` : ""}
+      subtitle={d ? `${roleName(d.person.role)} · joined ${dt(d.person.createdAt)}` : ""}
       actions={
         <select aria-label="Month" className="input max-w-[11rem]" value={month} onChange={(e) => setMonth(e.target.value)}>
           {recentMonths(12).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
